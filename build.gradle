@@ -36,6 +36,29 @@ dependencies {
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
 }
 
+
+def privateYmlDir = file('StockManager-private/yfin')
+def resourcesDir  = file('src/main/resources')
+
+tasks.register('copyPrivate', Copy) {
+    onlyIf { privateYmlDir.exists() }     // 서브모듈 없으면 스킵
+
+    // 복사 전에 기존 *.yml만 정리 (다른 리소스는 보존)
+    doFirst {
+        delete fileTree(dir: resourcesDir, include: ['*.yml'])
+    }
+
+    from(privateYmlDir) {
+        include '*.yml'
+    }
+    into resourcesDir
+}
+
+// 리소스 처리 전에 자동 실행되게 연결(선택)
+tasks.named('processResources') {
+    dependsOn tasks.named('copyPrivate')
+}
+
 tasks.test { useJUnitPlatform() }
 
 // Boot fat jar만 생성하고, 의존성 없는 plain jar는 비활성화
