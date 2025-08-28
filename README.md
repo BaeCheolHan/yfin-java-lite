@@ -79,7 +79,6 @@ curl 'http://localhost:8080/search?q=apple&count=5&lang=en-US&region=US'
   - 해결: fat JAR로 교체하고 실행하세요. 본 프로젝트는 `build.gradle`에서 `jar { enabled = false }`, `bootJar { enabled = true }`로 설정되어 fat JAR만 생성됩니다.
   - 서버 파일 용량이 수십 MB면 fat JAR일 가능성이 높습니다. `jar tf app.jar | head`로 `BOOT-INF/lib` 포함 여부를 확인하세요.
 
-### 라이선스
-프로젝트별 정책에 맞게 설정하세요.
+
 
 
