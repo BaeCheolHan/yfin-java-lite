@@ -110,6 +110,12 @@ curl 'http://localhost:8080/profile?ticker=AAPL'
   - 이벤트: `heartbeat`(주기적 핑), `quote`(실데이터)
   - 데이터: `QuoteDto`
 
+### 실시간 WebSocket
+- WS `/ws/quotes?tickers=AAPL,MSFT&intervalSec=1`
+  - Finnhub 키가 설정되면 WS 실시간 트레이드 구독(저지연)
+  - 키가 없으면 내부 폴링으로 자동 폴백
+  - 응답 메시지(단순화): `{ "symbol": string, "price": number, "dp": number }`
+
 ### 스크리너/랭킹
 - GET `/screener/filter?market=KS&minDividendYield=0.02&minVolatilityPct=0.5&minVolume=100000`
   - 설명: 시장·배당수익률·근사 변동성(%)·최소 거래량 필터

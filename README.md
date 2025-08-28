@@ -43,12 +43,6 @@ nohup $JAVA_HOME/bin/java -Dserver.port=8080 -jar /service/yfin-java-lite/yfin-j
   - `alphaVantage.apiKey`: Alpha Vantage 키
   - `finnhub.apiKey`: Finnhub 키
 
-환경변수 예시:
-```bash
-export ALPHAVANTAGE_APIKEY=your_alpha_vantage_key
-export FINNHUB_APIKEY=your_finnhub_key
-```
-
 ### 엔드포인트 요약
 - `GET /quote?ticker=...&exchange=`: 단일 종목 시세
 - `GET /quotes?tickers=AA,BB&exchange=`: 다중 종목 시세(쉼표 구분)
@@ -72,41 +66,19 @@ export FINNHUB_APIKEY=your_finnhub_key
 
 참고: 한국 6자리 숫자 티커(예: 005930)는 자동으로 `.KS`/`.KQ` 접미사를 판별합니다. 필요 시 `exchange` 파라미터로 강제 지정 가능합니다.
 
-### 사용 예시
+### 실시간 WebSocket
+- 엔드포인트: `ws://<host>:<port>/ws/quotes?tickers=AAPL,MSFT&intervalSec=1`
+- 동작:
+  - Finnhub API 키가 설정되어 있으면 실시간 WS 구독(저지연)
+  - 키가 없으면 내부 폴링으로 자동 폴백(SSE 대비 유사 레이턴시)
+- 메시지 예시(서버→클라이언트):
+```json
+{"symbol":"AAPL","price":230.49,"dp":0.51}
+```
+- 빠른 테스트:
 ```bash
-curl 'http://localhost:8080/quote?ticker=AAPL'
-curl 'http://localhost:8080/quotes?tickers=AAPL,MSFT'
-curl 'http://localhost:8080/history?ticker=AAPL&range=1mo&interval=1d&autoAdjust=true'
-curl 'http://localhost:8080/dividends?ticker=AAPL&range=5y'
-curl 'http://localhost:8080/options?ticker=AAPL'
-curl 'http://localhost:8080/search?q=apple&count=5&lang=en-US&region=US'
-curl 'http://localhost:8080/calendar?ticker=AAPL'
-curl 'http://localhost:8080/earnings/dates?ticker=AAPL'
-curl -N 'http://localhost:8080/stream/quotes?tickers=AAPL,MSFT&intervalSec=5'
-curl 'http://localhost:8080/screener/filter?market=KS&minDividendYield=0.01&minVolatilityPct=0.5&minVolume=100000'
-curl 'http://localhost:8080/screener/sector/ranking?market=KS&topN=5&sortBy=volume'
-curl 'http://localhost:8080/indicators/ma?ticker=AAPL&range=6mo&interval=1d&window=20'
-curl 'http://localhost:8080/indicators/rsi?ticker=AAPL&range=3mo&interval=1d&window=14'
-curl -H 'Content-Type: application/json' -d '[{"symbol":"AAPL","quantity":10,"averageCost":190.5}]' 'http://localhost:8080/portfolio/summary'
-curl 'http://localhost:8080/corp-actions?ticker=AAPL'
+npx -y wscat -c 'ws://localhost:8080/ws/quotes?tickers=AAPL,MSFT&intervalSec=1'
 ```
 
-### OpenAPI/Swagger UI
-- 의존성: `springdoc-openapi-starter-webflux-ui`
-- 접속: `http://localhost:8080/swagger-ui.html` (또는 `/swagger-ui/index.html`)
-- 자세한 엔드포인트와 스키마는 `docs/API.md` 참고
-
-### 캐시/성능
-- **단기 캐시**: Caffeine(메모리)
-- **분산 캐시**: Redis(선택)
-- Reactor Netty 워커 수 등은 `application.yml`에서 조정 가능합니다.
-
-### 트러블슈팅
-- **NoClassDefFoundError: ch.qos.logback.classic.spi.ThrowableProxy**
-  - fat JAR이 아닌 plain JAR 실행 시 발생합니다.
-  - 해결: fat JAR로 교체하고 실행하세요. 본 프로젝트는 `build.gradle`에서 `jar { enabled = false }`, `bootJar { enabled = true }`로 설정되어 fat JAR만 생성됩니다.
-  - 서버 파일 용량이 수십 MB면 fat JAR일 가능성이 높습니다. `jar tf app.jar | head`로 `BOOT-INF/lib` 포함 여부를 확인하세요.
-
-
-
-
+### 사용 예시
+```
