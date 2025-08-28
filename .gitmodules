@@ -1,0 +1,3 @@
+[submodule "private/stockmanager"]
+	path = private/stockmanager
+	url = https://github.com/BaeCheolHan/StockManager-private.git
