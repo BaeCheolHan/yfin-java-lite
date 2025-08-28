@@ -106,17 +106,17 @@ public class QuoteService {
     }
 
     // ---------- 내부 매퍼/유틸 ----------
-    @SuppressWarnings("unchecked")
     private List<QuoteDto> mapQuotes(Map<String, Object> body) {
-        Map<String, Object> qr = (Map<String, Object>) body.get("quoteResponse");
+        Map<String, Object> qr = asMap(body.get("quoteResponse"));
         if (qr == null) return List.of();
-        List<Map<String, Object>> results = (List<Map<String, Object>>) qr.getOrDefault("result", List.of());
+        List<Map<String, Object>> results = asListOfMap(qr.get("result"));
+        if (results == null) return List.of();
         List<QuoteDto> out = new ArrayList<>(results.size());
         for (Map<String, Object> m : results) {
             QuoteDto q = new QuoteDto();
-            q.setSymbol((String) m.get("symbol"));
-            q.setShortName((String) m.get("shortName"));
-            q.setCurrency((String) m.get("currency"));
+            q.setSymbol(s(m.get("symbol")));
+            q.setShortName(s(m.get("shortName")));
+            q.setCurrency(s(m.get("currency")));
             q.setRegularMarketPrice(d(m.get("regularMarketPrice")));
             q.setRegularMarketChange(d(m.get("regularMarketChange")));
             q.setRegularMarketChangePercent(d(m.get("regularMarketChangePercent")));
@@ -137,14 +137,13 @@ public class QuoteService {
         return out;
     }
 
-    @SuppressWarnings("unchecked")
     private void enrichForward(QuoteDto target, Map<String, Object> body) {
-        Map<String, Object> qs = (Map<String, Object>) body.get("quoteSummary");
+        Map<String, Object> qs = asMap(body.get("quoteSummary"));
         if (qs == null) return;
-        List<Map<String, Object>> result = (List<Map<String, Object>>) qs.get("result");
+        List<Map<String, Object>> result = asListOfMap(qs.get("result"));
         if (result == null || result.isEmpty()) return;
         Map<String, Object> r0 = result.get(0);
-        Map<String, Object> sd = (Map<String, Object>) r0.get("summaryDetail");
+        Map<String, Object> sd = asMap(r0.get("summaryDetail"));
         if (sd == null) return;
         Object dy = sd.get("dividendYield");
         Object dr = sd.get("dividendRate");
@@ -194,10 +193,8 @@ public class QuoteService {
     private static Double d(Object o) {
         if (o == null) return null;
         if (o instanceof Number n) return n.doubleValue();
-        if (o instanceof Map<?, ?> m) {
-            Object raw = m.get("raw");
-            return d(raw);
-        }
+        Map<String, Object> m = asMap(o);
+        if (m != null) return d(m.get("raw"));
         if (o instanceof String s) {
             String t = s.trim();
             if (t.endsWith("%")) t = t.substring(0, t.length() - 1).trim();
@@ -208,15 +205,32 @@ public class QuoteService {
     private static Long l(Object o) {
         if (o == null) return null;
         if (o instanceof Number n) return n.longValue();
-        if (o instanceof Map<?, ?> m) {
-            Object raw = m.get("raw");
-            return l(raw);
-        }
+        Map<String, Object> m = asMap(o);
+        if (m != null) return l(m.get("raw"));
         if (o instanceof String s) {
             try { return Long.parseLong(s.trim()); } catch (Exception ignored) { return null; }
         }
         return null;
     }
+
+    private static Map<String, Object> asMap(Object o) {
+        if (!(o instanceof Map<?, ?> src)) return null;
+        java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<?, ?> e : src.entrySet()) {
+            if (e.getKey() instanceof String k) out.put(k, e.getValue());
+        }
+        return out;
+    }
+    private static List<Map<String, Object>> asListOfMap(Object o) {
+        if (!(o instanceof List<?> list)) return null;
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Object it : list) {
+            Map<String, Object> m = asMap(it);
+            if (m != null) out.add(m);
+        }
+        return out;
+    }
+    private static String s(Object o) { return o == null ? null : String.valueOf(o); }
 }
 
 

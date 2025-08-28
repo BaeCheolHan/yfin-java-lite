@@ -1,6 +1,15 @@
 package com.example.yfin;
 
-import com.example.yfin.model.*;
+import com.example.yfin.model.HistoryResponse;
+import com.example.yfin.model.DividendsResponse;
+import com.example.yfin.model.OptionsResponse;
+import com.example.yfin.model.QuoteDto;
+import com.example.yfin.model.SearchResponse;
+import com.example.yfin.model.financials.FinancialsResponse;
+import com.example.yfin.model.earnings.EarningsResponse;
+import com.example.yfin.model.calendar.CalendarResponse;
+import com.example.yfin.model.earnings.EarningsDatesResponse;
+import com.example.yfin.model.profile.ProfileResponse;
 import com.example.yfin.service.ChartService;
 import com.example.yfin.service.DividendsService;
 import com.example.yfin.service.FundamentalsService;
@@ -112,6 +121,24 @@ public class ApiController {
             @Parameter(description = "거래소 접미사 수동 지정(선택)") @RequestParam(required = false) String exchange) {
         String t = ticker.trim().toUpperCase();
         return exchange == null ? fundSvc.earnings(t) : fundSvc.earningsEx(t, exchange);
+    }
+
+    @GetMapping("/calendar")
+    @Operation(summary = "캘린더/이벤트 조회", description = "calendarEvents 모듈")
+    public Mono<CalendarResponse> calendar(
+            @Parameter(description = "티커") @RequestParam String ticker,
+            @Parameter(description = "거래소 접미사 수동 지정(선택)") @RequestParam(required = false) String exchange) {
+        String t = ticker.trim().toUpperCase();
+        return exchange == null ? fundSvc.calendar(t) : fundSvc.calendarEx(t, exchange);
+    }
+
+    @GetMapping("/earnings/dates")
+    @Operation(summary = "실적발표 일정(과거/미래)", description = "v7/finance/earnings 기반 요약")
+    public Mono<EarningsDatesResponse> earningsDates(
+            @Parameter(description = "티커") @RequestParam String ticker,
+            @Parameter(description = "거래소 접미사 수동 지정(선택)") @RequestParam(required = false) String exchange) {
+        String t = ticker.trim().toUpperCase();
+        return exchange == null ? fundSvc.earningsDates(t) : fundSvc.earningsDatesEx(t, exchange);
     }
 
     @GetMapping("/profile")

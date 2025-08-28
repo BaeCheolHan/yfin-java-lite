@@ -51,6 +51,15 @@ nohup $JAVA_HOME/bin/java -Dserver.port=8080 -jar /service/yfin-java-lite/yfin-j
 - `GET /profile?ticker=...&exchange=`: 기업 개요/ESG
 - `GET /search?q=...&count=10&lang=&region=`: 검색
 - `GET /search/google?q=...&count=10&lang=` 또는 `GET /news/google`(대체 경로): Google News RSS
+- `GET /calendar?ticker=...&exchange=`: 캘린더/이벤트(calendarEvents)
+- `GET /earnings/dates?ticker=...&exchange=`: 실적발표 일정(과거/미래)
+ - `GET /stream/quotes?tickers=AA,BB&exchange=&intervalSec=5`: SSE 실시간 시세 스트림(heartbeat 포함)
+ - `GET /screener/filter?...`: 시장/배당/변동성/거래량 필터 스크리너
+ - `GET /screener/sector/ranking?...`: 섹터/업종 랭킹
+ - `GET /indicators/ma?...`: 이동평균(MA) 시계열
+ - `GET /indicators/rsi?...`: RSI 시계열
+ - `POST /portfolio/summary`: 포트폴리오 손익/배당 요약
+ - `GET /corp-actions?ticker=...`: 기업행위 요약(배당락/지급일/최근 배당/스플릿)
 
 참고: 한국 6자리 숫자 티커(예: 005930)는 자동으로 `.KS`/`.KQ` 접미사를 판별합니다. 필요 시 `exchange` 파라미터로 강제 지정 가능합니다.
 
@@ -62,11 +71,21 @@ curl 'http://localhost:8080/history?ticker=AAPL&range=1mo&interval=1d&autoAdjust
 curl 'http://localhost:8080/dividends?ticker=AAPL&range=5y'
 curl 'http://localhost:8080/options?ticker=AAPL'
 curl 'http://localhost:8080/search?q=apple&count=5&lang=en-US&region=US'
+curl 'http://localhost:8080/calendar?ticker=AAPL'
+curl 'http://localhost:8080/earnings/dates?ticker=AAPL'
+curl -N 'http://localhost:8080/stream/quotes?tickers=AAPL,MSFT&intervalSec=5'
+curl 'http://localhost:8080/screener/filter?market=KS&minDividendYield=0.01&minVolatilityPct=0.5&minVolume=100000'
+curl 'http://localhost:8080/screener/sector/ranking?market=KS&topN=5&sortBy=volume'
+curl 'http://localhost:8080/indicators/ma?ticker=AAPL&range=6mo&interval=1d&window=20'
+curl 'http://localhost:8080/indicators/rsi?ticker=AAPL&range=3mo&interval=1d&window=14'
+curl -H 'Content-Type: application/json' -d '[{"symbol":"AAPL","quantity":10,"averageCost":190.5}]' 'http://localhost:8080/portfolio/summary'
+curl 'http://localhost:8080/corp-actions?ticker=AAPL'
 ```
 
 ### OpenAPI/Swagger UI
 - 의존성: `springdoc-openapi-starter-webflux-ui`
 - 접속: `http://localhost:8080/swagger-ui.html` (또는 `/swagger-ui/index.html`)
+- 자세한 엔드포인트와 스키마는 `docs/API.md` 참고
 
 ### 캐시/성능
 - **단기 캐시**: Caffeine(메모리)

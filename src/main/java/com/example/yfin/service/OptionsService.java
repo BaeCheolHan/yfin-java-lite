@@ -65,22 +65,23 @@ public class OptionsService {
         });
     }
 
-    @SuppressWarnings("unchecked")
     private OptionsResponse mapOptions(String ticker, Long epoch, Map<String, Object> body) {
         OptionsResponse res = new OptionsResponse();
         res.setTicker(ticker);
         res.setExpiration(epoch == null ? "nearest" : String.valueOf(epoch));
 
-        Map<String, Object> optionChain = (Map<String, Object>) body.get("optionChain");
+        Map<String, Object> optionChain = asMap(body.get("optionChain"));
         if (optionChain == null) { res.setCalls(List.of()); res.setPuts(List.of()); return res; }
-        List<Map<String, Object>> result = (List<Map<String, Object>>) optionChain.get("result");
+        List<Map<String, Object>> result = asListOfMap(optionChain.get("result"));
         if (result == null || result.isEmpty()) { res.setCalls(List.of()); res.setPuts(List.of()); return res; }
         Map<String, Object> r0 = result.get(0);
-        List<Map<String, Object>> options = (List<Map<String, Object>>) r0.get("options");
+        List<Map<String, Object>> options = asListOfMap(r0.get("options"));
         if (options == null || options.isEmpty()) { res.setCalls(List.of()); res.setPuts(List.of()); return res; }
         Map<String, Object> o0 = options.get(0);
-        List<Map<String, Object>> calls = (List<Map<String, Object>>) o0.getOrDefault("calls", List.of());
-        List<Map<String, Object>> puts  = (List<Map<String, Object>>) o0.getOrDefault("puts", List.of());
+        List<Map<String, Object>> calls = asListOfMap(o0.get("calls"));
+        if (calls == null) calls = List.of();
+        List<Map<String, Object>> puts  = asListOfMap(o0.get("puts"));
+        if (puts == null) puts = List.of();
 
         List<OptionRow> callRows = new ArrayList<>(calls.size());
         for (Map<String, Object> m : calls) callRows.add(mapOptionRow(m, "CALL", o0));
@@ -92,7 +93,6 @@ public class OptionsService {
         return res;
     }
 
-    @SuppressWarnings("unchecked")
     private OptionRow mapOptionRow(Map<String, Object> m, String type, Map<String, Object> o0) {
         OptionRow row = new OptionRow();
         Object exp = m.get("expiration");
@@ -114,8 +114,38 @@ public class OptionsService {
         try { return Long.parseLong(expiration); }
         catch (NumberFormatException ignore) { return null; }
     }
-    private static Double d(Object o) { return o == null ? null : ((Number) o).doubleValue(); }
-    private static Long   l(Object o) { return o == null ? null : ((Number) o).longValue(); }
+    private static Double d(Object o) {
+        if (o == null) return null;
+        if (o instanceof Number n) return n.doubleValue();
+        Map<String, Object> m = asMap(o);
+        if (m != null) return d(m.get("raw"));
+        return null;
+    }
+    private static Long   l(Object o) {
+        if (o == null) return null;
+        if (o instanceof Number n) return n.longValue();
+        Map<String, Object> m = asMap(o);
+        if (m != null) return l(m.get("raw"));
+        return null;
+    }
+
+    private static Map<String, Object> asMap(Object o) {
+        if (!(o instanceof Map<?, ?> src)) return null;
+        java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<?, ?> e : src.entrySet()) {
+            if (e.getKey() instanceof String k) out.put(k, e.getValue());
+        }
+        return out;
+    }
+    private static List<Map<String, Object>> asListOfMap(Object o) {
+        if (!(o instanceof List<?> list)) return null;
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Object it : list) {
+            Map<String, Object> m = asMap(it);
+            if (m != null) out.add(m);
+        }
+        return out;
+    }
 }
 
 

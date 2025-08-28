@@ -25,6 +25,46 @@ public class DividendsService {
         this.l2 = l2;
     }
 
+    public Mono<List<String>> splits(String ticker, String range) {
+        String r = (range == null || range.isBlank()) ? "5y" : range;
+        return resolver.normalize(ticker).flatMap(nt -> {
+            String path = "/v8/finance/chart/" + nt +
+                    "?range=" + r + "&interval=1d&events=div%2Csplits&lang=en-US&region=US&corsDomain=finance.yahoo.com";
+            String key = "splits:" + nt + ":" + r;
+            return l2.get(key, new com.fasterxml.jackson.core.type.TypeReference<java.util.List<java.lang.String>>() {})
+                    .switchIfEmpty(
+                            yahoo.getJson(path, "/quote/" + nt)
+                                    .map(this::mapSplits)
+                                    .flatMap(res -> l2.set(key, res, java.time.Duration.ofSeconds(20)).thenReturn(res))
+                    );
+        });
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> mapSplits(Map<String, Object> body) {
+        Map<String, Object> chart = (Map<String, Object>) body.get("chart");
+        if (chart == null) return List.of();
+        List<Map<String, Object>> results = (List<Map<String, Object>>) chart.get("result");
+        if (results == null || results.isEmpty()) return List.of();
+        Map<String, Object> r = results.get(0);
+        Map<String, Object> events = (Map<String, Object>) r.get("events");
+        if (events == null) return List.of();
+        Map<String, Map<String, Object>> splits = (Map<String, Map<String, Object>>) events.get("splits");
+        if (splits == null || splits.isEmpty()) return List.of();
+
+        java.util.List<String> out = new java.util.ArrayList<>(splits.size());
+        for (Map<String, Object> m : splits.values()) {
+            Long date = m.get("date") == null ? null : ((Number) m.get("date")).longValue();
+            Integer num = m.get("numerator") == null ? null : ((Number) m.get("numerator")).intValue();
+            Integer den = m.get("denominator") == null ? null : ((Number) m.get("denominator")).intValue();
+            String ymd = date == null ? "" : java.time.Instant.ofEpochSecond(date).toString().substring(0, 10);
+            String ratio = (num != null && den != null) ? (num + ":" + den) : "";
+            out.add(ymd + ": " + ratio);
+        }
+        out.sort(java.util.Comparator.naturalOrder());
+        return out;
+    }
+
     @Cacheable(cacheNames = "dividends", key = "#ticker + ':' + #range")
     public Mono<DividendsResponse> dividends(String ticker, String range) {
         String r = (range == null || range.isBlank()) ? "5y" : range;

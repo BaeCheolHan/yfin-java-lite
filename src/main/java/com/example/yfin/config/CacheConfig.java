@@ -12,7 +12,7 @@ import java.time.Duration;
 public class CacheConfig {
     @Bean
     public CacheManager cacheManager() {
-        CaffeineCacheManager cm = new CaffeineCacheManager("quote","quotes","history","dividends","options","financials","resolve","earnings","profile","search");
+        CaffeineCacheManager cm = new CaffeineCacheManager("quote","quotes","history","dividends","options","financials","resolve","earnings","profile","search","calendar","earningsDates","corpActions");
         cm.setCaffeine(Caffeine.newBuilder()
                 .maximumSize(10_000)
                 .expireAfterWrite(Duration.ofSeconds(5)));
