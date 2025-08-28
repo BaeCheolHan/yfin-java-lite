@@ -1,0 +1,43 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.3.2'
+    id 'io.spring.dependency-management' version '1.1.5'
+}
+
+group = 'com.example'
+version = '0.1.0'
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(17) }
+}
+
+repositories { mavenCentral() }
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-webflux'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springframework.boot:spring-boot-starter-cache'
+    implementation 'com.github.ben-manes.caffeine:caffeine:3.1.8'
+    implementation 'org.springdoc:springdoc-openapi-starter-webflux-ui:2.6.0'
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis-reactive'
+    implementation 'org.springframework.boot:spring-boot-starter-data-mongodb-reactive'
+    // RDB(JPA/JDBC) 제거
+    def osName = System.getProperty('os.name').toLowerCase()
+    if (osName.contains('mac')) {
+        def arch = System.getProperty('os.arch').toLowerCase()
+        def classifier = (arch.contains('aarch64') || arch.contains('arm64')) ? 'osx-aarch_64' : 'osx-x86_64'
+        runtimeOnly "io.netty:netty-resolver-dns-native-macos:4.1.111.Final:${classifier}"
+    }
+
+    compileOnly 'org.projectlombok:lombok:1.18.34'
+    annotationProcessor 'org.projectlombok:lombok:1.18.34'
+    testCompileOnly 'org.projectlombok:lombok:1.18.34'
+    testAnnotationProcessor 'org.projectlombok:lombok:1.18.34'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}
+
+tasks.test { useJUnitPlatform() }
+
+// Boot fat jar만 생성하고, 의존성 없는 plain jar는 비활성화
+bootJar { enabled = true }
+jar { enabled = false }
