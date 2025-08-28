@@ -12,6 +12,8 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.List;
 import java.util.Map;
 
@@ -27,6 +29,14 @@ public class YahooApiClient {
     private final CookieStore cookieStore;
 
     private volatile String crumb;
+    private final AtomicInteger uaIndex = new AtomicInteger(0);
+    private static final String[] USER_AGENTS = new String[] {
+            // 다양한 브라우저 UA 회전으로 Anti-bot 완화
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0"
+    };
 
     public YahooApiClient(@Qualifier("yahooClient") WebClient yahooClient,
                           @Qualifier("yahooApiClient1") WebClient yahooClient1,
@@ -56,6 +66,13 @@ public class YahooApiClient {
                                 .then(invalidateCrumb())
                                 .then(ensureCrumb().defaultIfEmpty(""))
                                 .flatMap(c3 -> doRequestJson(yahooClient, attachCrumb(path, c3), refererPath)))
+                .onErrorResume(this::shouldRetryAntiBot, e -> {
+                    long jitter = ThreadLocalRandom.current().nextLong(500, 1200);
+                    return Mono.delay(Duration.ofMillis(jitter))
+                            .then(invalidateCrumb())
+                            .then(ensureCrumb().defaultIfEmpty(""))
+                            .flatMap(c4 -> doRequestJson(yahooClient2, attachCrumb(path, c4), refererPath));
+                })
                 .doOnSuccess(r -> log.debug("Yahoo GET {} took {} ms", path, (System.nanoTime()-started)/1_000_000))
                 .doOnError(err -> log.warn("Yahoo GET {} failed after {} ms: {}", path, (System.nanoTime()-started)/1_000_000, err.toString()));
     }
@@ -97,8 +114,10 @@ public class YahooApiClient {
                     h.set("Accept", "application/json, text/javascript, */*; q=0.01");
                     h.set("Accept-Language", "en-US,en;q=0.9");
                     h.set("Accept-Encoding", "identity");
+                    h.set("User-Agent", nextUserAgent());
                     h.set("Connection", "keep-alive");
                     h.set("Cache-Control", "no-cache");
+                    h.set("Pragma", "no-cache");
                     h.set("sec-fetch-site", "same-origin");
                     h.set("sec-fetch-mode", "cors");
                     h.set("sec-fetch-dest", "empty");
@@ -198,6 +217,17 @@ public class YahooApiClient {
         }
         String msg = e.getMessage();
         return msg != null && (msg.contains("Yahoo blocked (401)") || msg.contains("Yahoo blocked (403)"));
+    }
+
+    private boolean shouldRetryAntiBot(Throwable e) {
+        if (isBlocked(e)) return true;
+        String msg = (e == null) ? null : e.getMessage();
+        return msg != null && (msg.contains("non-JSON") || msg.contains("crumb fetch failed") || msg.contains("connection reset"));
+    }
+
+    private String nextUserAgent() {
+        int idx = Math.abs(uaIndex.getAndIncrement());
+        return USER_AGENTS[idx % USER_AGENTS.length];
     }
 }
 

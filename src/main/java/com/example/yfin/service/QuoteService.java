@@ -2,6 +2,8 @@ package com.example.yfin.service;
 
 import com.example.yfin.exception.NotFoundException;
 import com.example.yfin.http.YahooApiClient;
+import com.example.yfin.http.AlphaVantageClient;
+import com.example.yfin.http.FinnhubClient;
 import com.example.yfin.model.QuoteDto;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
@@ -20,15 +22,21 @@ public class QuoteService {
     private final TickerResolver resolver;
     private final com.example.yfin.service.cache.RedisCacheService l2;
     private final DividendsService dividendsService;
+    private final AlphaVantageClient alphaVantage;
+    private final FinnhubClient finnhub;
 
     public QuoteService(YahooApiClient yahoo,
                         TickerResolver resolver,
                         com.example.yfin.service.cache.RedisCacheService l2,
-                        DividendsService dividendsService) {
+                        DividendsService dividendsService,
+                        AlphaVantageClient alphaVantage,
+                        FinnhubClient finnhub) {
         this.yahoo = yahoo;
         this.resolver = resolver;
         this.l2 = l2;
         this.dividendsService = dividendsService;
+        this.alphaVantage = alphaVantage;
+        this.finnhub = finnhub;
     }
 
     @Cacheable(cacheNames = "quote", key = "#ticker")
@@ -57,7 +65,9 @@ public class QuoteService {
             String cacheKey = "quotes:" + symbols;
             return l2.get(cacheKey, new com.fasterxml.jackson.core.type.TypeReference<List<QuoteDto>>() {})
                     .switchIfEmpty(
-                            yahoo.getJson(path, ref).flatMap(quotesBody -> {
+                            yahoo.getJson(path, ref)
+                                    .onErrorResume(e -> fallbackQuotes(norm))
+                                    .flatMap(quotesBody -> {
                                 List<QuoteDto> base = mapQuotes(quotesBody);
                                 List<String> needForward = new ArrayList<>();
                                 for (QuoteDto q : base) {
@@ -75,7 +85,10 @@ public class QuoteService {
                                     String sym = q.getSymbol();
                                     String p = "/v10/finance/quoteSummary/" + sym + "?modules=" + modules + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
                                     enrichCalls.add(
-                                            yahoo.getJson(p, "/quote/" + sym).doOnNext(b -> enrichForward(q, b)).then()
+                                            yahoo.getJson(p, "/quote/" + sym)
+                                                    .doOnNext(b -> enrichForward(q, b))
+                                                    .onErrorResume(err -> Mono.empty())
+                                                    .then()
                                     );
                                 }
                                 return Mono.when(enrichCalls).then(Mono.defer(() -> {
@@ -84,7 +97,10 @@ public class QuoteService {
                                         if (q.getForwardDividendYield() != null || q.getForwardDividendRate() != null) continue;
                                         String sym = q.getSymbol();
                                         ttmCalls.add(
-                                                dividendsService.dividends(sym, "2y").doOnNext(div -> enrichTtm(q, div)).then()
+                                                dividendsService.dividends(sym, "2y")
+                                                        .doOnNext(div -> enrichTtm(q, div))
+                                                        .onErrorResume(err -> Mono.empty())
+                                                        .then()
                                         );
                                     }
                                     if (ttmCalls.isEmpty()) return Mono.just(base);
@@ -231,6 +247,96 @@ public class QuoteService {
         return out;
     }
     private static String s(Object o) { return o == null ? null : String.valueOf(o); }
+
+    // --------- Fallback providers ---------
+    private reactor.core.publisher.Mono<java.util.Map<String, Object>> fallbackQuotes(java.util.List<String> symbols) {
+        java.util.List<com.example.yfin.model.QuoteDto> collected = new java.util.ArrayList<>();
+        java.util.List<reactor.core.publisher.Mono<Void>> calls = new java.util.ArrayList<>();
+        for (String sym : symbols) {
+            calls.add(
+                    fallbackQuote(sym)
+                            .doOnNext(q -> { if (q != null) collected.add(q); })
+                            .onErrorResume(e -> reactor.core.publisher.Mono.empty())
+                            .then()
+            );
+        }
+        return reactor.core.publisher.Mono.when(calls).then(reactor.core.publisher.Mono.defer(() -> {
+            java.util.Map<String, Object> qr = new java.util.LinkedHashMap<>();
+            java.util.List<java.util.Map<String, Object>> result = new java.util.ArrayList<>();
+            for (com.example.yfin.model.QuoteDto q : collected) {
+                java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+                m.put("symbol", q.getSymbol());
+                m.put("shortName", q.getShortName());
+                m.put("currency", q.getCurrency());
+                m.put("regularMarketPrice", q.getRegularMarketPrice());
+                m.put("regularMarketChange", q.getRegularMarketChange());
+                m.put("regularMarketChangePercent", q.getRegularMarketChangePercent());
+                m.put("regularMarketVolume", q.getRegularMarketVolume());
+                m.put("regularMarketPreviousClose", q.getPreviousClose());
+                m.put("regularMarketDayHigh", q.getDayHigh());
+                m.put("regularMarketDayLow", q.getDayLow());
+                m.put("fiftyTwoWeekHigh", q.getFiftyTwoWeekHigh());
+                m.put("fiftyTwoWeekLow", q.getFiftyTwoWeekLow());
+                m.put("trailingAnnualDividendRate", q.getTrailingAnnualDividendRate());
+                m.put("trailingAnnualDividendYield", q.getTrailingAnnualDividendYield());
+                m.put("dividendYield", q.getDividendYield());
+                m.put("dividendRate", q.getForwardDividendRate());
+                result.add(m);
+            }
+            qr.put("result", result);
+            java.util.Map<String, Object> body = new java.util.LinkedHashMap<>();
+            body.put("quoteResponse", qr);
+            return reactor.core.publisher.Mono.just(body);
+        }));
+    }
+
+    private reactor.core.publisher.Mono<com.example.yfin.model.QuoteDto> fallbackQuote(String symbol) {
+        reactor.core.publisher.Mono<com.example.yfin.model.QuoteDto> finnh = (finnhub != null && finnhub.isEnabled())
+                ? finnhub.quote(symbol).map(m -> mapFinnhubQuote(symbol, m)).onErrorResume(e -> reactor.core.publisher.Mono.empty())
+                : reactor.core.publisher.Mono.empty();
+        reactor.core.publisher.Mono<com.example.yfin.model.QuoteDto> av = (alphaVantage != null && alphaVantage.isEnabled())
+                ? alphaVantage.globalQuote(symbol).map(m -> mapAlphaVantageGlobalQuote(symbol, m)).onErrorResume(e -> reactor.core.publisher.Mono.empty())
+                : reactor.core.publisher.Mono.empty();
+        return finnh.switchIfEmpty(av);
+    }
+
+    private com.example.yfin.model.QuoteDto mapFinnhubQuote(String symbol, java.util.Map<String, Object> body) {
+        if (body == null || body.isEmpty()) return null;
+        com.example.yfin.model.QuoteDto q = new com.example.yfin.model.QuoteDto();
+        q.setSymbol(symbol);
+        q.setRegularMarketPrice(d(body.get("c")));
+        q.setRegularMarketChange(d(body.get("d")));
+        Double dp = d(body.get("dp"));
+        q.setRegularMarketChangePercent(dp);
+        q.setDayHigh(d(body.get("h")));
+        q.setDayLow(d(body.get("l")));
+        q.setPreviousClose(d(body.get("pc")));
+        return q;
+    }
+
+    private com.example.yfin.model.QuoteDto mapAlphaVantageGlobalQuote(String symbol, java.util.Map<String, Object> body) {
+        if (body == null) return null;
+        java.util.Map<String, Object> gq = asMap(body.get("Global Quote"));
+        if (gq == null || gq.isEmpty()) return null;
+        com.example.yfin.model.QuoteDto q = new com.example.yfin.model.QuoteDto();
+        q.setSymbol(symbol);
+        q.setRegularMarketPrice(d(gq.get("05. price")));
+        q.setPreviousClose(d(gq.get("08. previous close")));
+        Double p = q.getRegularMarketPrice();
+        Double pc = q.getPreviousClose();
+        if (p != null && pc != null) {
+            double ch = p - pc;
+            q.setRegularMarketChange(ch);
+            if (pc != 0.0) q.setRegularMarketChangePercent(ch / pc * 100.0);
+        } else {
+            String cpp = s(gq.get("10. change percent"));
+            if (cpp != null && cpp.endsWith("%")) {
+                try { q.setRegularMarketChangePercent(Double.parseDouble(cpp.substring(0, cpp.length()-1))); } catch (Exception ignored) {}
+            }
+        }
+        q.setRegularMarketVolume(l(gq.get("06. volume")));
+        return q;
+    }
 }
 
 

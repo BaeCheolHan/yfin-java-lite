@@ -7,6 +7,24 @@ Swagger UI: http://localhost:8080/swagger-ui.html (모델/스키마와 예제는
 ### 공통
 - 티커 자동 보정: 한국 6자리 숫자는 `.KS`/`.KQ` 자동 판별. 필요 시 `exchange`로 강제 지정.
 
+### 데이터 소스 및 폴백
+- 기본 데이터 소스는 Yahoo Finance입니다.
+- Alpha Vantage / Finnhub API 키가 없으면 폴백은 비활성화되고 Yahoo만 사용됩니다.
+- 키가 설정되면 Yahoo가 차단/비가용 시 자동으로 폴백을 시도합니다.
+
+설정(application.yml):
+```yaml
+alphaVantage:
+  apiKey: ""
+finnhub:
+  apiKey: ""
+```
+환경변수 예시:
+```bash
+export ALPHAVANTAGE_APIKEY=your_alpha_vantage_key
+export FINNHUB_APIKEY=your_finnhub_key
+```
+
 ### 시세/차트/배당/옵션/검색 (요약)
 - GET `/quote?ticker=...&exchange=`
 - GET `/quotes?tickers=AA,BB&exchange=`

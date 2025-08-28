@@ -39,6 +39,15 @@ nohup $JAVA_HOME/bin/java -Dserver.port=8080 -jar /service/yfin-java-lite/yfin-j
 - **MongoDB**: `spring.data.mongodb.uri`
 - **Redis**: `spring.redis.host`, `spring.redis.port`, `spring.redis.timeout`
 - **캐시 TTL**: `cache.quote-ttl-seconds`, `cache.history-ttl-seconds`, `cache.dividends-ttl-seconds`
+- **폴백 프로바이더(선택)**: 키가 비어 있으면 폴백은 비활성화되며 기본은 Yahoo입니다.
+  - `alphaVantage.apiKey`: Alpha Vantage 키
+  - `finnhub.apiKey`: Finnhub 키
+
+환경변수 예시:
+```bash
+export ALPHAVANTAGE_APIKEY=your_alpha_vantage_key
+export FINNHUB_APIKEY=your_finnhub_key
+```
 
 ### 엔드포인트 요약
 - `GET /quote?ticker=...&exchange=`: 단일 종목 시세

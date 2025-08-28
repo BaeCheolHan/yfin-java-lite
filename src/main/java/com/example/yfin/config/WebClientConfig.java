@@ -45,6 +45,16 @@ public class WebClientConfig {
         return mk("https://finance.yahoo.com");
     }
 
+    @Bean("alphaVantageHttp")
+    public WebClient alphaVantageHttp() {
+        return mk("https://www.alphavantage.co");
+    }
+
+    @Bean("finnhubHttp")
+    public WebClient finnhubHttp() {
+        return mk("https://finnhub.io");
+    }
+
     @Bean
     public CookieStore cookieStore() {
         return new CookieStore();
