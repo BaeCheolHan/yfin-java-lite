@@ -6,7 +6,7 @@ import lombok.Setter;
 
 @Getter
 @Setter
-@Schema(description = "실적발표일(과거/미래) 응답")
+@Schema(description = "실적발표일(과거/미래) 응답 - 단일 요약 필드 포함")
 public class EarningsDatesResponse {
     @Schema(description = "티커")
     private String ticker;

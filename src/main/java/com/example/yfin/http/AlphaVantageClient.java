@@ -31,7 +31,7 @@ public class AlphaVantageClient {
     }
 
     /** GLOBAL_QUOTE for a single symbol */
-    public Mono<Map<String, Object>> globalQuote(String symbol) {
+    public Mono<Map<String, Object>> getQuote(String symbol) {
         if (!isEnabled()) return Mono.empty();
         return http.get()
                 .uri(uriBuilder -> uriBuilder

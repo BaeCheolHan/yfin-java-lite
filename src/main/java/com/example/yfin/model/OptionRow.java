@@ -8,7 +8,7 @@ public class OptionRow {
     @Schema(description = "만기(UTC)")
     private Instant expiration;
     @Schema(description = "종류 CALL/PUT")
-    private String type; // CALL or PUT
+    private OptionType type;
     @Schema(description = "행사가")
     private Double strike;
     @Schema(description = "최종 체결가")
@@ -26,8 +26,8 @@ public class OptionRow {
 
     public Instant getExpiration() { return expiration; }
     public void setExpiration(Instant expiration) { this.expiration = expiration; }
-    public String getType() { return type; }
-    public void setType(String type) { this.type = type; }
+    public OptionType getType() { return type; }
+    public void setType(OptionType type) { this.type = type; }
     public Double getStrike() { return strike; }
     public void setStrike(Double strike) { this.strike = strike; }
     public Double getLastPrice() { return lastPrice; }

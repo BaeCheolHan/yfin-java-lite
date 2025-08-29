@@ -11,6 +11,7 @@ import com.example.yfin.model.earnings.EarningsTrendDto;
 import com.example.yfin.model.profile.SummaryProfileDto;
 import com.example.yfin.model.profile.EsgScoresDto;
 import org.springframework.cache.annotation.Cacheable;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
@@ -18,22 +19,15 @@ import java.util.List;
 import java.util.Map;
 
 @Service
+@RequiredArgsConstructor
 public class FundamentalsService {
-    private final YahooApiClient yahoo;
-    private final TickerResolver resolver;
-    private final com.example.yfin.service.cache.RedisCacheService l2;
+    private final YahooApiClient yahooApiClient;
+    private final TickerResolver tickerResolver;
+    private final com.example.yfin.service.cache.RedisCacheService level2Cache;
     private final com.example.yfin.repo.ListingMetaRepository listingRepo;
-    private final com.example.yfin.http.DartClient dart;
+    private final com.example.yfin.http.DartClient dartClient;
 
-    public FundamentalsService(YahooApiClient yahoo, TickerResolver resolver, com.example.yfin.service.cache.RedisCacheService l2,
-                               com.example.yfin.repo.ListingMetaRepository listingRepo,
-                               com.example.yfin.http.DartClient dart) {
-        this.yahoo = yahoo;
-        this.resolver = resolver;
-        this.l2 = l2;
-        this.listingRepo = listingRepo;
-        this.dart = dart;
-    }
+    
 
     private EarningsDatesResponse mapEarningsDates(String ticker, Map<String, Object> body) {
         EarningsDatesResponse response = new EarningsDatesResponse();
@@ -81,28 +75,28 @@ public class FundamentalsService {
     @Cacheable(cacheNames = "financials", key = "#ticker")
     public Mono<FinancialsResponse> financials(String ticker) {
         String modules = "incomeStatementHistory,balanceSheetHistory,cashflowStatementHistory";
-        return resolver.normalize(ticker).flatMap(nt -> {
+        return tickerResolver.normalize(ticker).flatMap(nt -> {
             String path = "/v10/finance/quoteSummary/" + nt + "?modules=" + modules + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
             String key = "financials:" + nt;
-            return l2.get(key, new com.fasterxml.jackson.core.type.TypeReference<com.example.yfin.model.financials.FinancialsResponse>() {})
+            return level2Cache.get(key, new com.fasterxml.jackson.core.type.TypeReference<com.example.yfin.model.financials.FinancialsResponse>() {})
                     .switchIfEmpty(
-                            yahoo.getJson(path, "/quote/" + nt)
+                            yahooApiClient.getJson(path, "/quote/" + nt)
                                     .map(m -> mapFinancials(nt, m))
-                                    .flatMap(res -> l2.set(key, res, java.time.Duration.ofSeconds(30)).thenReturn(res))
+                                    .flatMap(res -> level2Cache.set(key, res, java.time.Duration.ofSeconds(30)).thenReturn(res))
                     );
         });
     }
 
     public Mono<FinancialsResponse> financialsEx(String ticker, String exchange) {
         String modules = "incomeStatementHistory,balanceSheetHistory,cashflowStatementHistory";
-        return resolver.normalize(ticker, exchange).flatMap(nt -> {
+        return tickerResolver.normalize(ticker, exchange).flatMap(nt -> {
             String path = "/v10/finance/quoteSummary/" + nt + "?modules=" + modules + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
             String key = "financials:" + nt;
-            return l2.get(key, new com.fasterxml.jackson.core.type.TypeReference<com.example.yfin.model.financials.FinancialsResponse>() {})
+            return level2Cache.get(key, new com.fasterxml.jackson.core.type.TypeReference<com.example.yfin.model.financials.FinancialsResponse>() {})
                     .switchIfEmpty(
-                            yahoo.getJson(path, "/quote/" + nt)
+                            yahooApiClient.getJson(path, "/quote/" + nt)
                                     .map(m -> mapFinancials(nt, m))
-                                    .flatMap(res -> l2.set(key, res, java.time.Duration.ofSeconds(30)).thenReturn(res))
+                                    .flatMap(res -> level2Cache.set(key, res, java.time.Duration.ofSeconds(30)).thenReturn(res))
                     );
         });
     }
@@ -110,14 +104,14 @@ public class FundamentalsService {
     @Cacheable(cacheNames = "earnings", key = "#ticker")
     public Mono<EarningsResponse> earnings(String ticker) {
         String modules = "earnings,earningsTrend,calendarEvents";
-        return resolver.normalize(ticker).flatMap(nt -> {
+        return tickerResolver.normalize(ticker).flatMap(nt -> {
             String path = "/v10/finance/quoteSummary/" + nt + "?modules=" + modules + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
             String key = "earnings:" + nt;
-            return l2.get(key, new com.fasterxml.jackson.core.type.TypeReference<com.example.yfin.model.earnings.EarningsResponse>() {})
+            return level2Cache.get(key, new com.fasterxml.jackson.core.type.TypeReference<com.example.yfin.model.earnings.EarningsResponse>() {})
                     .switchIfEmpty(
-                            yahoo.getJson(path, "/quote/" + nt)
+                            yahooApiClient.getJson(path, "/quote/" + nt)
                                     .map(m -> mapEarnings(nt, m))
-                                    .flatMap(res -> l2.set(key, res, java.time.Duration.ofSeconds(30)).thenReturn(res))
+                                    .flatMap(res -> level2Cache.set(key, res, java.time.Duration.ofSeconds(30)).thenReturn(res))
                     );
         });
     }
@@ -125,14 +119,14 @@ public class FundamentalsService {
     @Cacheable(cacheNames = "earnings", key = "#ticker + ':' + #exchange")
     public Mono<EarningsResponse> earningsEx(String ticker, String exchange) {
         String modules = "earnings,earningsTrend,calendarEvents";
-        return resolver.normalize(ticker, exchange).flatMap(nt -> {
+        return tickerResolver.normalize(ticker, exchange).flatMap(nt -> {
             String path = "/v10/finance/quoteSummary/" + nt + "?modules=" + modules + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
             String key = "earnings:" + nt;
-            return l2.get(key, new com.fasterxml.jackson.core.type.TypeReference<com.example.yfin.model.earnings.EarningsResponse>() {})
+            return level2Cache.get(key, new com.fasterxml.jackson.core.type.TypeReference<com.example.yfin.model.earnings.EarningsResponse>() {})
                     .switchIfEmpty(
-                            yahoo.getJson(path, "/quote/" + nt)
+                            yahooApiClient.getJson(path, "/quote/" + nt)
                                     .map(m -> mapEarnings(nt, m))
-                                    .flatMap(res -> l2.set(key, res, java.time.Duration.ofSeconds(30)).thenReturn(res))
+                                    .flatMap(res -> level2Cache.set(key, res, java.time.Duration.ofSeconds(30)).thenReturn(res))
                     );
         });
     }
@@ -140,15 +134,15 @@ public class FundamentalsService {
     @Cacheable(cacheNames = "profile", key = "#ticker")
     public Mono<ProfileResponse> profile(String ticker) {
         String modules = "summaryProfile,esgScores";
-        return resolver.normalize(ticker).flatMap(nt -> {
+        return tickerResolver.normalize(ticker).flatMap(nt -> {
             String path = "/v10/finance/quoteSummary/" + nt + "?modules=" + modules + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
             String key = "profile:" + nt;
-            return l2.get(key, new com.fasterxml.jackson.core.type.TypeReference<com.example.yfin.model.profile.ProfileResponse>() {})
+            return level2Cache.get(key, new com.fasterxml.jackson.core.type.TypeReference<com.example.yfin.model.profile.ProfileResponse>() {})
                     .switchIfEmpty(
-                            yahoo.getJson(path, "/quote/" + nt)
+                            yahooApiClient.getJson(path, "/quote/" + nt)
                                     .map(m -> mapProfile(nt, m))
                                     .flatMap(res -> enrichProfileWithMetaAndDart(nt, res))
-                                    .flatMap(res -> l2.set(key, res, java.time.Duration.ofSeconds(60)).thenReturn(res))
+                                    .flatMap(res -> level2Cache.set(key, res, java.time.Duration.ofSeconds(60)).thenReturn(res))
                     );
         });
     }
@@ -156,14 +150,14 @@ public class FundamentalsService {
     @Cacheable(cacheNames = "calendar", key = "#ticker")
     public Mono<CalendarResponse> calendar(String ticker) {
         String modules = "calendarEvents";
-        return resolver.normalize(ticker).flatMap(nt -> {
+        return tickerResolver.normalize(ticker).flatMap(nt -> {
             String path = "/v10/finance/quoteSummary/" + nt + "?modules=" + modules + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
             String key = "calendar:" + nt;
-            return l2.get(key, new com.fasterxml.jackson.core.type.TypeReference<com.example.yfin.model.calendar.CalendarResponse>() {})
+            return level2Cache.get(key, new com.fasterxml.jackson.core.type.TypeReference<com.example.yfin.model.calendar.CalendarResponse>() {})
                     .switchIfEmpty(
-                            yahoo.getJson(path, "/quote/" + nt)
+                            yahooApiClient.getJson(path, "/quote/" + nt)
                                     .map(m -> mapCalendar(nt, m))
-                                    .flatMap(res -> l2.set(key, res, java.time.Duration.ofSeconds(60)).thenReturn(res))
+                                    .flatMap(res -> level2Cache.set(key, res, java.time.Duration.ofSeconds(60)).thenReturn(res))
                     );
         });
     }
@@ -171,14 +165,14 @@ public class FundamentalsService {
     @Cacheable(cacheNames = "calendar", key = "#ticker + ':' + #exchange")
     public Mono<CalendarResponse> calendarEx(String ticker, String exchange) {
         String modules = "calendarEvents";
-        return resolver.normalize(ticker, exchange).flatMap(nt -> {
+        return tickerResolver.normalize(ticker, exchange).flatMap(nt -> {
             String path = "/v10/finance/quoteSummary/" + nt + "?modules=" + modules + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
             String key = "calendar:" + nt;
-            return l2.get(key, new com.fasterxml.jackson.core.type.TypeReference<com.example.yfin.model.calendar.CalendarResponse>() {})
+            return level2Cache.get(key, new com.fasterxml.jackson.core.type.TypeReference<com.example.yfin.model.calendar.CalendarResponse>() {})
                     .switchIfEmpty(
-                            yahoo.getJson(path, "/quote/" + nt)
+                            yahooApiClient.getJson(path, "/quote/" + nt)
                                     .map(m -> mapCalendar(nt, m))
-                                    .flatMap(res -> l2.set(key, res, java.time.Duration.ofSeconds(60)).thenReturn(res))
+                                    .flatMap(res -> level2Cache.set(key, res, java.time.Duration.ofSeconds(60)).thenReturn(res))
                     );
         });
     }
@@ -186,14 +180,14 @@ public class FundamentalsService {
     @Cacheable(cacheNames = "earningsDates", key = "#ticker")
     public Mono<EarningsDatesResponse> earningsDates(String ticker) {
         String modules = "earnings,calendarEvents";
-        return resolver.normalize(ticker).flatMap(nt -> {
+        return tickerResolver.normalize(ticker).flatMap(nt -> {
             String path = "/v10/finance/quoteSummary/" + nt + "?modules=" + modules + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
             String key = "earningsDates:" + nt;
-            return l2.get(key, new com.fasterxml.jackson.core.type.TypeReference<com.example.yfin.model.earnings.EarningsDatesResponse>() {})
+            return level2Cache.get(key, new com.fasterxml.jackson.core.type.TypeReference<com.example.yfin.model.earnings.EarningsDatesResponse>() {})
                     .switchIfEmpty(
-                            yahoo.getJson(path, "/quote/" + nt)
+                            yahooApiClient.getJson(path, "/quote/" + nt)
                                     .map(m -> mapEarningsDates(nt, m))
-                                    .flatMap(res -> l2.set(key, res, java.time.Duration.ofSeconds(300)).thenReturn(res))
+                                    .flatMap(res -> level2Cache.set(key, res, java.time.Duration.ofSeconds(300)).thenReturn(res))
                     );
         });
     }
@@ -201,14 +195,14 @@ public class FundamentalsService {
     @Cacheable(cacheNames = "earningsDates", key = "#ticker + ':' + #exchange")
     public Mono<EarningsDatesResponse> earningsDatesEx(String ticker, String exchange) {
         String modules = "earnings,calendarEvents";
-        return resolver.normalize(ticker, exchange).flatMap(nt -> {
+        return tickerResolver.normalize(ticker, exchange).flatMap(nt -> {
             String path = "/v10/finance/quoteSummary/" + nt + "?modules=" + modules + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
             String key = "earningsDates:" + nt;
-            return l2.get(key, new com.fasterxml.jackson.core.type.TypeReference<com.example.yfin.model.earnings.EarningsDatesResponse>() {})
+            return level2Cache.get(key, new com.fasterxml.jackson.core.type.TypeReference<com.example.yfin.model.earnings.EarningsDatesResponse>() {})
                     .switchIfEmpty(
-                            yahoo.getJson(path, "/quote/" + nt)
+                            yahooApiClient.getJson(path, "/quote/" + nt)
                                     .map(m -> mapEarningsDates(nt, m))
-                                    .flatMap(res -> l2.set(key, res, java.time.Duration.ofSeconds(300)).thenReturn(res))
+                                    .flatMap(res -> level2Cache.set(key, res, java.time.Duration.ofSeconds(300)).thenReturn(res))
                     );
         });
     }
@@ -216,15 +210,15 @@ public class FundamentalsService {
     @Cacheable(cacheNames = "profile", key = "#ticker + ':' + #exchange")
     public Mono<ProfileResponse> profileEx(String ticker, String exchange) {
         String modules = "summaryProfile,esgScores";
-        return resolver.normalize(ticker, exchange).flatMap(nt -> {
+        return tickerResolver.normalize(ticker, exchange).flatMap(nt -> {
             String path = "/v10/finance/quoteSummary/" + nt + "?modules=" + modules + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
             String key = "profile:" + nt;
-            return l2.get(key, new com.fasterxml.jackson.core.type.TypeReference<com.example.yfin.model.profile.ProfileResponse>() {})
+            return level2Cache.get(key, new com.fasterxml.jackson.core.type.TypeReference<com.example.yfin.model.profile.ProfileResponse>() {})
                     .switchIfEmpty(
-                            yahoo.getJson(path, "/quote/" + nt)
+                            yahooApiClient.getJson(path, "/quote/" + nt)
                                     .map(m -> mapProfile(nt, m))
                                     .flatMap(res -> enrichProfileWithMetaAndDart(nt, res))
-                                    .flatMap(res -> l2.set(key, res, java.time.Duration.ofSeconds(60)).thenReturn(res))
+                                    .flatMap(res -> level2Cache.set(key, res, java.time.Duration.ofSeconds(60)).thenReturn(res))
                     );
         });
     }
@@ -242,7 +236,7 @@ public class FundamentalsService {
                 .defaultIfEmpty(res)
                 .flatMap(r -> {
                     // DART 요약(키 없으면 패스)
-                    return dart.company("")
+                    return dartClient.company("")
                             .onErrorResume(e -> reactor.core.publisher.Mono.empty())
                             .map(map -> {
                                 java.util.Map<String, Object> safe = asMap(map);

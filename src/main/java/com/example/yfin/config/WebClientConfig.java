@@ -55,6 +55,11 @@ public class WebClientConfig {
         return mk("https://finnhub.io");
     }
 
+    @Bean("kisHttp")
+    public WebClient kisHttp(@org.springframework.beans.factory.annotation.Value("${api.kis.base-url:https://openapi.koreainvestment.com:9443}") String baseUrl) {
+        return mk(baseUrl);
+    }
+
     @Bean
     public CookieStore cookieStore() {
         return new CookieStore();

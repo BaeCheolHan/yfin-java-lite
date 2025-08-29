@@ -66,19 +66,38 @@ nohup $JAVA_HOME/bin/java -Dserver.port=8080 -jar /service/yfin-java-lite/yfin-j
 
 참고: 한국 6자리 숫자 티커(예: 005930)는 자동으로 `.KS`/`.KQ` 접미사를 판별합니다. 필요 시 `exchange` 파라미터로 강제 지정 가능합니다.
 
-### 실시간 WebSocket
-- 엔드포인트: `ws://<host>:<port>/ws/quotes?tickers=AAPL,MSFT&intervalSec=1`
-- 동작:
-  - Finnhub API 키가 설정되어 있으면 실시간 WS 구독(저지연)
-  - 키가 없으면 내부 폴링으로 자동 폴백(SSE 대비 유사 레이턴시)
-- 메시지 예시(서버→클라이언트):
+### 실시간 WebSocket (KIS 우선)
+- 엔드포인트: `ws://<host>:<port>/ws/quotes?tickers=AAPL,005930&intervalSec=1`
+- 라우팅/동작 순서(우선순위)
+  - KIS 승인키가 유효하면 국내(.KS/.KQ)와 해외(미국 등) 모두 KIS WS로 우선 구독(저지연)
+  - KIS 승인 실패/제한 시 자동으로 Finnhub WS로 폴백
+  - 보강용 스냅샷(REST)은 중복 제거 후 병합됨
+    - KIS 경로: 최소 1초(`intervalSec`) 보강
+    - 폴백 경로: 최소 10초 보강(차단 리스크 완화)
+- 요청 파라미터
+  - `tickers`: 쉼표 구분 멀티 심볼. 한국 6자리 티커는 자동으로 `.KS/.KQ` 보정
+  - `intervalSec`: 보강 스냅샷 최소 간격(기본 2, KIS 경로는 1초까지 허용)
+- 응답 메시지(서버→클라이언트):
 ```json
 {"symbol":"AAPL","price":230.49,"dp":0.51}
 ```
 - 빠른 테스트:
 ```bash
-npx -y wscat -c 'ws://localhost:8080/ws/quotes?tickers=AAPL,MSFT&intervalSec=1'
+npx -y wscat -c 'ws://localhost:8080/ws/quotes?tickers=005930,AAPL&intervalSec=1'
 ```
+
+#### KIS 설정(application.yml)
+```yaml
+api:
+  kis:
+    appKey: <APP_KEY>
+    app-secret: <APP_SECRET>
+    access-token-generate-url: https://openapi.koreainvestment.com:9443/oauth2/tokenP
+    approval-url: /oauth2/Approval   # (선택) 기본값 동일
+```
+Redis 저장(요약):
+- REST 토큰: `RestKisToken:<access_token>` 해시(만료 TTL 포함)
+- WS 승인키: `SocketKisToken:<approval_key>` 해시(기본 TTL 24h)
 
 ### 사용 예시
 ```

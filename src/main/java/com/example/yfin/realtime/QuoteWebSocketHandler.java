@@ -2,6 +2,7 @@ package com.example.yfin.realtime;
 
 import com.example.yfin.http.FinnhubClient;
 import com.example.yfin.model.QuoteDto;
+import com.example.yfin.kis.KisWsClient;
 import com.example.yfin.service.QuoteService;
 import com.example.yfin.service.TickerResolver;
 import org.slf4j.Logger;
@@ -24,12 +25,14 @@ public class QuoteWebSocketHandler implements WebSocketHandler {
     private final FinnhubClient finnhub;
     private final FinnhubWsClient finnhubWs;
     private final TickerResolver resolver;
+    private final KisWsClient kisWs;
 
-    public QuoteWebSocketHandler(QuoteService quoteService, FinnhubClient finnhub, FinnhubWsClient finnhubWs, TickerResolver resolver) {
+    public QuoteWebSocketHandler(QuoteService quoteService, FinnhubClient finnhub, FinnhubWsClient finnhubWs, TickerResolver resolver, KisWsClient kisWs) {
         this.quoteService = quoteService;
         this.finnhub = finnhub;
         this.finnhubWs = finnhubWs;
         this.resolver = resolver;
+        this.kisWs = kisWs;
     }
 
     @Override
@@ -38,11 +41,13 @@ public class QuoteWebSocketHandler implements WebSocketHandler {
         String tickersParam = q.getOrDefault("tickers", "");
         List<String> rawTickers = parseTickers(tickersParam);
         int intervalSec = parseInt(q.get("intervalSec"), 2);
+        String exchange = q.get("exchange");
         if (rawTickers.isEmpty()) {
             return session.send(Flux.just(session.textMessage("{" + "\"error\":\"tickers required\"}")));
         }
 
-        return normalizeTickers(rawTickers)
+        return normalizeTickers(rawTickers, exchange)
+                .doOnNext(tickers -> log.info("WS normalized tickers: {}", tickers))
                 .flatMap(tickers -> {
                     Flux<String> stream = buildQuoteStream(tickers, intervalSec)
                             .map(this::toJson)
@@ -52,18 +57,23 @@ public class QuoteWebSocketHandler implements WebSocketHandler {
     }
 
     private Flux<QuoteDto> buildQuoteStream(List<String> tickers, int intervalSec) {
-        boolean useWs = (finnhubWs != null && finnhubWs.isEnabled());
+        boolean useKis = kisWs != null && kisWs.isEnabled();
+        boolean useWs = (finnhubWs != null && finnhubWs.isEnabled()) || useKis;
         if (useWs) {
-            // 심볼별 WS 구독을 머지; 가격만 빠르게 반영, 기타 필드는 폴링 보강 가능
+            // 심볼별 WS 구독을 머지 (국내 종목은 KIS가 우선), WS 전용 사용 (Yahoo 폴링 제거)
             List<Flux<QuoteDto>> streams = new ArrayList<>();
-            for (String sym : tickers) streams.add(finnhubWs.subscribe(sym));
-            return Flux.merge(streams);
+            if (useKis) for (String sym : tickers) {
+                streams.add(kisWs.subscribe(sym)
+                        .doOnSubscribe(s -> log.info("KIS Flux subscribed downstream for symbol: {}", sym)));
+            }
+            if (finnhubWs != null && finnhubWs.isEnabled()) for (String sym : tickers) streams.add(finnhubWs.subscribe(sym));
+            Flux<QuoteDto> wsFlux = Flux.merge(streams);
+
+            return wsFlux.distinctUntilChanged(q -> q.getSymbol() + ":" + q.getRegularMarketPrice());
         }
-        int sec = (finnhub != null && finnhub.isEnabled()) ? Math.max(1, intervalSec) : Math.max(2, intervalSec);
-        return Flux.interval(Duration.ZERO, Duration.ofSeconds(sec))
-                .flatMap(t -> quoteService.quotes(tickers))
-                .flatMapIterable(list -> list)
-                .onErrorResume(e -> Flux.empty());
+        // WS 공급자가 없는 경우에는 빈 스트림 반환 (WS 경로에서는 Yahoo 사용 금지)
+        log.warn("No WebSocket provider enabled (KIS/Finnhub). Returning empty stream for WS endpoint.");
+        return Flux.empty();
     }
 
     private Map<String, String> parseQuery(String raw) {
@@ -110,12 +120,46 @@ public class QuoteWebSocketHandler implements WebSocketHandler {
     private Mono<List<String>> normalizeTickers(List<String> tickers) {
         if (tickers == null || tickers.isEmpty()) return Mono.just(List.of());
         List<Mono<String>> monos = new ArrayList<>(tickers.size());
-        for (String t : tickers) monos.add(resolver.normalize(t));
+        for (String t : tickers) {
+            String raw = t;
+            monos.add(
+                    resolver.normalize(raw)
+                            .timeout(Duration.ofSeconds(2))
+                            .onErrorResume(e -> {
+                                log.warn("normalize timeout/failure for {} -> fallback raw: {}", raw, e.toString());
+                                return Mono.just(raw);
+                            })
+            );
+        }
         return Mono.zip(monos, arr -> {
             List<String> out = new ArrayList<>(arr.length);
             for (Object o : arr) out.add(String.valueOf(o));
             return out;
-        });
+        }).timeout(Duration.ofSeconds(5))
+                .onErrorResume(e -> {
+                    log.warn("normalize all timeout/failure -> using raw list: {}", e.toString());
+                    return Mono.just(tickers);
+                });
+    }
+
+    private Mono<List<String>> normalizeTickers(List<String> tickers, String exchange) {
+        if (exchange == null || exchange.isBlank()) return normalizeTickers(tickers);
+        if (tickers == null || tickers.isEmpty()) return Mono.just(List.of());
+        List<Mono<String>> monos = new ArrayList<>(tickers.size());
+        for (String t : tickers) {
+            String raw = t;
+            monos.add(
+                    resolver.normalize(raw, exchange)
+                            .timeout(Duration.ofSeconds(2))
+                            .onErrorResume(e -> Mono.just(raw))
+            );
+        }
+        return Mono.zip(monos, arr -> {
+            List<String> out = new ArrayList<>(arr.length);
+            for (Object o : arr) out.add(String.valueOf(o));
+            return out;
+        }).timeout(Duration.ofSeconds(5))
+                .onErrorResume(e -> Mono.just(tickers));
     }
 }
 

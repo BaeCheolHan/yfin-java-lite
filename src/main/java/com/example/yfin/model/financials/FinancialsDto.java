@@ -6,7 +6,7 @@ import lombok.Setter;
 
 @Getter
 @Setter
-@Schema(description = "요약 재무제표(최근 값 기준)")
+@Schema(description = "요약 재무제표(최근 값 기준) - 단일 항목 DTO")
 public class FinancialsDto {
     @Schema(description = "매출(최근)" )
     private Long totalRevenue;

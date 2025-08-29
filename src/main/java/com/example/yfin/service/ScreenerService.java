@@ -3,6 +3,7 @@ package com.example.yfin.service;
 import com.example.yfin.model.QuoteDto;
 import com.example.yfin.repo.ListingMetaRepository;
 import org.springframework.stereotype.Service;
+import lombok.RequiredArgsConstructor;
 import reactor.core.publisher.Mono;
 
 import java.util.ArrayList;
@@ -10,17 +11,14 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import com.example.yfin.model.ScreenerSortBy;
 
 @Service
+@RequiredArgsConstructor
 public class ScreenerService {
 
     private final ListingMetaRepository listingRepo;
     private final QuoteService quoteService;
-
-    public ScreenerService(ListingMetaRepository listingRepo, QuoteService quoteService) {
-        this.listingRepo = listingRepo;
-        this.quoteService = quoteService;
-    }
 
     public Mono<List<QuoteDto>> filterBy(String market,
                                          Double minDividendYield,
@@ -65,12 +63,13 @@ public class ScreenerService {
                 .flatMap(docs -> {
                     List<String> ids = docs.stream().map(d -> d.getId()).collect(Collectors.toList());
                     return quoteService.quotes(ids).map(quotes -> {
+                        ScreenerSortBy by = ScreenerSortBy.from(sortBy);
                         Map<String, List<QuoteDto>> grouped = docs.stream()
                                 .collect(Collectors.groupingBy(
                                         d -> d.getSector() == null ? "UNKNOWN" : d.getSector(),
                                         Collectors.mapping(d -> findQuote(quotes, d.getId()), Collectors.toList())
                                 ));
-                        Comparator<QuoteDto> cmp = buildComparator(sortBy);
+                        Comparator<QuoteDto> cmp = buildComparator(by);
                         List<Map.Entry<String, List<QuoteDto>>> ranked = new ArrayList<>(grouped.entrySet());
                         for (Map.Entry<String, List<QuoteDto>> e : ranked) {
                             List<QuoteDto> vs = e.getValue().stream().filter(q -> q != null).sorted(cmp.reversed()).limit(topN).collect(Collectors.toList());
@@ -82,8 +81,8 @@ public class ScreenerService {
                 });
     }
 
-    private static Comparator<QuoteDto> buildComparator(String sortBy) {
-        if ("volume".equalsIgnoreCase(sortBy)) {
+    private static Comparator<QuoteDto> buildComparator(ScreenerSortBy sortBy) {
+        if (sortBy == ScreenerSortBy.VOLUME) {
             return Comparator.comparing(q -> q.getRegularMarketVolume() == null ? 0L : q.getRegularMarketVolume());
         }
         // 기본: 수익률 기준

@@ -2,8 +2,10 @@ package com.example.yfin.service;
 
 import com.example.yfin.http.YahooApiClient;
 import com.example.yfin.model.OptionRow;
+import com.example.yfin.model.OptionType;
 import com.example.yfin.model.OptionsResponse;
 import org.springframework.cache.annotation.Cacheable;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
@@ -13,21 +15,18 @@ import java.util.List;
 import java.util.Map;
 
 @Service
+@RequiredArgsConstructor
 public class OptionsService {
-    private final YahooApiClient yahoo;
-    private final TickerResolver resolver;
-    private final com.example.yfin.service.cache.RedisCacheService l2;
+    private final YahooApiClient yahooApiClient;
+    private final TickerResolver tickerResolver;
+    private final com.example.yfin.service.cache.RedisCacheService level2Cache;
 
-    public OptionsService(YahooApiClient yahoo, TickerResolver resolver, com.example.yfin.service.cache.RedisCacheService l2) {
-        this.yahoo = yahoo;
-        this.resolver = resolver;
-        this.l2 = l2;
-    }
+    
 
     @Cacheable(cacheNames = "options", key = "#ticker + ':' + (#expiration == null ? 'nearest' : #expiration)")
     public Mono<OptionsResponse> options(String ticker, String expiration) {
         Long epoch = parseExpirationToEpoch(expiration);
-        return resolver.normalize(ticker).flatMap(nt -> {
+        return tickerResolver.normalize(ticker).flatMap(nt -> {
             String referer = "/quote/" + nt + "/options";
             String path = "/v7/finance/options/" + nt;
             if (epoch != null) {
@@ -36,18 +35,18 @@ public class OptionsService {
                 path += "?lang=en-US&region=US&corsDomain=finance.yahoo.com";
             }
             String key = "options:" + nt + ":" + (epoch == null ? "nearest" : epoch);
-            return l2.get(key, new com.fasterxml.jackson.core.type.TypeReference<OptionsResponse>() {})
+            return level2Cache.get(key, new com.fasterxml.jackson.core.type.TypeReference<OptionsResponse>() {})
                     .switchIfEmpty(
-                            yahoo.getJson(path, referer)
+                            yahooApiClient.getJson(path, referer)
                                     .map(m -> mapOptions(nt, epoch, m))
-                                    .flatMap(res -> l2.set(key, res, java.time.Duration.ofSeconds(20)).thenReturn(res))
+                                    .flatMap(res -> level2Cache.set(key, res, java.time.Duration.ofSeconds(20)).thenReturn(res))
                     );
         });
     }
 
     public Mono<OptionsResponse> optionsEx(String ticker, String expiration, String exchange) {
         Long epoch = parseExpirationToEpoch(expiration);
-        return resolver.normalize(ticker, exchange).flatMap(nt -> {
+        return tickerResolver.normalize(ticker, exchange).flatMap(nt -> {
             String referer = "/quote/" + nt + "/options";
             String path = "/v7/finance/options/" + nt;
             if (epoch != null) {
@@ -56,11 +55,11 @@ public class OptionsService {
                 path += "?lang=en-US&region=US&corsDomain=finance.yahoo.com";
             }
             String key = "options:" + nt + ":" + (epoch == null ? "nearest" : epoch);
-            return l2.get(key, new com.fasterxml.jackson.core.type.TypeReference<OptionsResponse>() {})
+            return level2Cache.get(key, new com.fasterxml.jackson.core.type.TypeReference<OptionsResponse>() {})
                     .switchIfEmpty(
-                            yahoo.getJson(path, referer)
+                            yahooApiClient.getJson(path, referer)
                                     .map(m -> mapOptions(nt, epoch, m))
-                                    .flatMap(res -> l2.set(key, res, java.time.Duration.ofSeconds(20)).thenReturn(res))
+                                    .flatMap(res -> level2Cache.set(key, res, java.time.Duration.ofSeconds(20)).thenReturn(res))
                     );
         });
     }
@@ -84,16 +83,16 @@ public class OptionsService {
         if (puts == null) puts = List.of();
 
         List<OptionRow> callRows = new ArrayList<>(calls.size());
-        for (Map<String, Object> m : calls) callRows.add(mapOptionRow(m, "CALL", o0));
+        for (Map<String, Object> m : calls) callRows.add(mapOptionRow(m, OptionType.CALL, o0));
         List<OptionRow> putRows = new ArrayList<>(puts.size());
-        for (Map<String, Object> m : puts) putRows.add(mapOptionRow(m, "PUT", o0));
+        for (Map<String, Object> m : puts) putRows.add(mapOptionRow(m, OptionType.PUT, o0));
 
         res.setCalls(callRows);
         res.setPuts(putRows);
         return res;
     }
 
-    private OptionRow mapOptionRow(Map<String, Object> m, String type, Map<String, Object> o0) {
+    private OptionRow mapOptionRow(Map<String, Object> m, OptionType type, Map<String, Object> o0) {
         OptionRow row = new OptionRow();
         Object exp = m.get("expiration");
         if (exp instanceof Number n) row.setExpiration(Instant.ofEpochSecond(n.longValue()));

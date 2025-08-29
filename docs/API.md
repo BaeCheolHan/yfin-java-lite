@@ -110,11 +110,27 @@ curl 'http://localhost:8080/profile?ticker=AAPL'
   - 이벤트: `heartbeat`(주기적 핑), `quote`(실데이터)
   - 데이터: `QuoteDto`
 
-### 실시간 WebSocket
-- WS `/ws/quotes?tickers=AAPL,MSFT&intervalSec=1`
-  - Finnhub 키가 설정되면 WS 실시간 트레이드 구독(저지연)
-  - 키가 없으면 내부 폴링으로 자동 폴백
-  - 응답 메시지(단순화): `{ "symbol": string, "price": number, "dp": number }`
+### 실시간 WebSocket (KIS 우선)
+- WS `/ws/quotes?tickers=AAPL,005930&intervalSec=1`
+  - KIS 승인키가 유효하면 KIS WS로 우선 구독(국내/해외 모두)
+  - 승인 실패/제한 시 Finnhub WS로 자동 폴백
+  - 보강 스냅샷은 중복 제거 후 병합됨(KIS: 1초, 폴백: 10초 최소)
+  - 응답(단순화): `{ "symbol": string, "price": number, "dp": number }`
+
+#### KIS 설정
+```yaml
+api:
+  kis:
+    appKey: <APP_KEY>
+    app-secret: <APP_SECRET>
+    access-token-generate-url: https://openapi.koreainvestment.com:9443/oauth2/tokenP
+    approval-url: /oauth2/Approval
+```
+
+#### 테스트
+```bash
+npx -y wscat -c 'ws://localhost:8080/ws/quotes?tickers=005930,AAPL&intervalSec=1'
+```
 
 ### 스크리너/랭킹
 - GET `/screener/filter?market=KS&minDividendYield=0.02&minVolatilityPct=0.5&minVolume=100000`

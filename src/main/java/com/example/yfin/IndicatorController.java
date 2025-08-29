@@ -6,6 +6,7 @@ import com.example.yfin.service.IndicatorService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -15,13 +16,10 @@ import java.util.List;
 
 @RestController
 @Tag(name = "Indicator API", description = "이동평균/RSI 등 기술적 지표")
+@RequiredArgsConstructor
 public class IndicatorController {
 
     private final IndicatorService indicatorService;
-
-    public IndicatorController(IndicatorService indicatorService) {
-        this.indicatorService = indicatorService;
-    }
 
     @GetMapping("/indicators/ma")
     @Operation(summary = "이동평균", description = "window 구간 단순이동평균(SMA)")
