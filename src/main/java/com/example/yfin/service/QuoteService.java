@@ -59,55 +59,78 @@ public class QuoteService {
     public Mono<List<QuoteDto>> quotes(List<String> tickers) {
         if (tickers == null || tickers.isEmpty()) return Mono.just(List.of());
         return normalizeTickers(tickers).flatMap(norm -> {
-            String symbols = String.join(",", norm);
-            String path = "/v7/finance/quote?symbols=" + symbols + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
-            String ref = "/quote/" + norm.get(0);
-            String cacheKey = "quotes:" + symbols;
-            return l2.get(cacheKey, new com.fasterxml.jackson.core.type.TypeReference<List<QuoteDto>>() {})
-                    .switchIfEmpty(
-                            yahoo.getJson(path, ref)
-                                    .onErrorResume(e -> fallbackQuotes(norm))
-                                    .flatMap(quotesBody -> {
-                                List<QuoteDto> base = mapQuotes(quotesBody);
-                                List<String> needForward = new ArrayList<>();
-                                for (QuoteDto q : base) {
-                                    if (q.getForwardDividendYield() == null && q.getForwardDividendRate() == null) {
-                                        needForward.add(q.getSymbol());
-                                    }
-                                }
-                                if (needForward.isEmpty()) {
-                                    return Mono.just(base);
-                                }
-                                String modules = "summaryDetail";
-                                List<Mono<Void>> enrichCalls = new ArrayList<>();
-                                for (QuoteDto q : base) {
-                                    if (q.getForwardDividendYield() != null || q.getForwardDividendRate() != null) continue;
-                                    String sym = q.getSymbol();
-                                    String p = "/v10/finance/quoteSummary/" + sym + "?modules=" + modules + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
-                                    enrichCalls.add(
-                                            yahoo.getJson(p, "/quote/" + sym)
-                                                    .doOnNext(b -> enrichForward(q, b))
-                                                    .onErrorResume(err -> Mono.empty())
-                                                    .then()
-                                    );
-                                }
-                                return Mono.when(enrichCalls).then(Mono.defer(() -> {
-                                    List<Mono<Void>> ttmCalls = new ArrayList<>();
-                                    for (QuoteDto q : base) {
-                                        if (q.getForwardDividendYield() != null || q.getForwardDividendRate() != null) continue;
-                                        String sym = q.getSymbol();
-                                        ttmCalls.add(
-                                                dividendsService.dividends(sym, "2y")
-                                                        .doOnNext(div -> enrichTtm(q, div))
-                                                        .onErrorResume(err -> Mono.empty())
-                                                        .then()
-                                        );
-                                    }
-                                    if (ttmCalls.isEmpty()) return Mono.just(base);
-                                    return Mono.when(ttmCalls).thenReturn(base);
-                                }));
-                            }).flatMap(list -> l2.set(cacheKey, list, java.time.Duration.ofSeconds(15)).thenReturn(list))
+            // 심볼을 6~8개 단위로 배치 분할하여 차단 가능성 저감
+            int batchSize = 8;
+            java.util.List<java.util.List<String>> batches = new java.util.ArrayList<>();
+            for (int i = 0; i < norm.size(); i += batchSize) {
+                batches.add(norm.subList(i, Math.min(i + batchSize, norm.size())));
+            }
+
+            java.util.List<Mono<java.util.List<QuoteDto>>> batchCalls = new java.util.ArrayList<>();
+            for (java.util.List<String> group : batches) {
+                String symbols = String.join(",", group);
+                String path = "/v7/finance/quote?symbols=" + symbols + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
+                String ref = "/quote/" + group.get(0);
+                String cacheKey = "quotes:" + symbols;
+                Mono<java.util.List<QuoteDto>> call = l2.get(cacheKey, new com.fasterxml.jackson.core.type.TypeReference<java.util.List<QuoteDto>>() {})
+                        .switchIfEmpty(
+                                yahoo.getJson(path, ref)
+                                        .onErrorResume(e -> fallbackQuotes(group))
+                                        .map(this::mapQuotes)
+                                        .flatMap(list -> l2.set(cacheKey, list, java.time.Duration.ofSeconds(15)).thenReturn(list))
+                        )
+                        .timeout(java.time.Duration.ofSeconds(12))
+                        .onErrorResume(e -> fallbackQuotes(group).map(this::mapQuotes));
+                batchCalls.add(call);
+            }
+
+            return reactor.core.publisher.Mono.zip(batchCalls, arr -> {
+                java.util.List<QuoteDto> all = new java.util.ArrayList<>();
+                for (Object o : arr) {
+                    @SuppressWarnings("unchecked")
+                    java.util.List<QuoteDto> part = (java.util.List<QuoteDto>) o;
+                    if (part != null) all.addAll(part);
+                }
+                return all;
+            }).flatMap(base -> {
+                java.util.List<String> needForward = new java.util.ArrayList<>();
+                for (QuoteDto q : base) {
+                    if (q.getForwardDividendYield() == null && q.getForwardDividendRate() == null) {
+                        needForward.add(q.getSymbol());
+                    }
+                }
+                if (needForward.isEmpty()) {
+                    return Mono.just(base);
+                }
+                String modules = "summaryDetail";
+                java.util.List<Mono<Void>> enrichCalls = new java.util.ArrayList<>();
+                for (QuoteDto q : base) {
+                    if (q.getForwardDividendYield() != null || q.getForwardDividendRate() != null) continue;
+                    String sym = q.getSymbol();
+                    String p = "/v10/finance/quoteSummary/" + sym + "?modules=" + modules + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
+                    enrichCalls.add(
+                            yahoo.getJson(p, "/quote/" + sym)
+                                    .doOnNext(b -> enrichForward(q, b))
+                                    .onErrorResume(err -> Mono.empty())
+                                    .then()
                     );
+                }
+                return Mono.when(enrichCalls).then(Mono.defer(() -> {
+                    java.util.List<Mono<Void>> ttmCalls = new java.util.ArrayList<>();
+                    for (QuoteDto q : base) {
+                        if (q.getForwardDividendYield() != null || q.getForwardDividendRate() != null) continue;
+                        String sym = q.getSymbol();
+                        ttmCalls.add(
+                                dividendsService.dividends(sym, "2y")
+                                        .doOnNext(div -> enrichTtm(q, div))
+                                        .onErrorResume(err -> Mono.empty())
+                                        .then()
+                        );
+                    }
+                    if (ttmCalls.isEmpty()) return Mono.just(base);
+                    return Mono.when(ttmCalls).thenReturn(base);
+                }));
+            });
         });
     }
 

@@ -113,11 +113,13 @@ public class YahooApiClient {
                 .headers(h -> {
                     h.set("Accept", "application/json, text/javascript, */*; q=0.01");
                     h.set("Accept-Language", "en-US,en;q=0.9");
-                    h.set("Accept-Encoding", "identity");
+                    // Accept-Encoding은 서버가 압축을 선택하도록 비설정(기본)으로 둔다
                     h.set("User-Agent", nextUserAgent());
                     h.set("Connection", "keep-alive");
                     h.set("Cache-Control", "no-cache");
                     h.set("Pragma", "no-cache");
+                    h.set("DNT", "1");
+                    h.set("Upgrade-Insecure-Requests", "1");
                     h.set("sec-fetch-site", "same-origin");
                     h.set("sec-fetch-mode", "cors");
                     h.set("sec-fetch-dest", "empty");
