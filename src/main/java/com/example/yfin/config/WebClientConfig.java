@@ -56,8 +56,8 @@ public class WebClientConfig {
     }
 
     @Bean("kisHttp")
-    public WebClient kisHttp() {
-        return mk("https://openapi.koreainvestment.com:9443");
+    public WebClient kisHttp(@org.springframework.beans.factory.annotation.Value("${api.kis.base-url:https://openapi.koreainvestment.com:9443}") String baseUrl) {
+        return mk(baseUrl);
     }
 
     @Bean

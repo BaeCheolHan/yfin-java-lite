@@ -47,6 +47,7 @@ public class QuoteWebSocketHandler implements WebSocketHandler {
         }
 
         return normalizeTickers(rawTickers, exchange)
+                .doOnNext(tickers -> log.info("WS normalized tickers: {}", tickers))
                 .flatMap(tickers -> {
                     Flux<String> stream = buildQuoteStream(tickers, intervalSec)
                             .map(this::toJson)
@@ -59,27 +60,20 @@ public class QuoteWebSocketHandler implements WebSocketHandler {
         boolean useKis = kisWs != null && kisWs.isEnabled();
         boolean useWs = (finnhubWs != null && finnhubWs.isEnabled()) || useKis;
         if (useWs) {
-            // 심볼별 WS 구독을 머지 (국내 종목은 KIS가 우선)
+            // 심볼별 WS 구독을 머지 (국내 종목은 KIS가 우선), WS 전용 사용 (Yahoo 폴링 제거)
             List<Flux<QuoteDto>> streams = new ArrayList<>();
-            if (useKis) for (String sym : tickers) streams.add(kisWs.subscribe(sym));
+            if (useKis) for (String sym : tickers) {
+                streams.add(kisWs.subscribe(sym)
+                        .doOnSubscribe(s -> log.info("KIS Flux subscribed downstream for symbol: {}", sym)));
+            }
             if (finnhubWs != null && finnhubWs.isEnabled()) for (String sym : tickers) streams.add(finnhubWs.subscribe(sym));
             Flux<QuoteDto> wsFlux = Flux.merge(streams);
 
-            // 폴링 보강: finnhub 레이트리밋 보호를 위해 Yahoo 전용 스냅샷 + 주기 축소
-            int sec = useKis ? Math.max(1, intervalSec) : Math.max(10, Math.max(2, intervalSec));
-            Flux<QuoteDto> pollFlux = Flux.interval(Duration.ZERO, Duration.ofSeconds(sec))
-                    .flatMap(t -> quoteService.quotesSnapshotSafe(tickers))
-                    .flatMapIterable(list -> list)
-                    .onErrorResume(e -> Flux.empty());
-
-            return Flux.merge(wsFlux, pollFlux)
-                    .distinctUntilChanged(q -> q.getSymbol() + ":" + q.getRegularMarketPrice());
+            return wsFlux.distinctUntilChanged(q -> q.getSymbol() + ":" + q.getRegularMarketPrice());
         }
-        int sec = (finnhub != null && finnhub.isEnabled()) ? Math.max(1, intervalSec) : Math.max(2, intervalSec);
-        return Flux.interval(Duration.ZERO, Duration.ofSeconds(sec))
-                .flatMap(t -> quoteService.quotes(tickers))
-                .flatMapIterable(list -> list)
-                .onErrorResume(e -> Flux.empty());
+        // WS 공급자가 없는 경우에는 빈 스트림 반환 (WS 경로에서는 Yahoo 사용 금지)
+        log.warn("No WebSocket provider enabled (KIS/Finnhub). Returning empty stream for WS endpoint.");
+        return Flux.empty();
     }
 
     private Map<String, String> parseQuery(String raw) {

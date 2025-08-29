@@ -82,7 +82,6 @@ public class FinnhubWsClient {
 
     private Mono<Void> connectOnce() {
         String url = "wss://ws.finnhub.io?token=" + apiKey;
-        log.info("Connecting Finnhub WS: {}", url.replace(apiKey, "****"));
         return wsClient.execute(URI.create(url), session -> {
             connected = true;
             // 송신: outbound sink + ping 을 단일 send 스트림으로 병합

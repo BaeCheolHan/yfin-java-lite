@@ -27,7 +27,6 @@ public class KisAuthClient {
     private final String tokenUrl;
     private final String wsApprovalUrl;
     private final AtomicReference<TokenHolder> cached = new AtomicReference<>();
-    private final RedisCacheService cache; // reserved for future shared cache usage
     private final ReactiveStringRedisTemplate redis;
 
     public KisAuthClient(@Qualifier("kisHttp") WebClient kisHttp,
@@ -35,18 +34,19 @@ public class KisAuthClient {
                          @Value("${api.kis.app-secret:${kis.appSecret:}}") String appSecret,
                          @Value("${api.kis.access-token-generate-url:}") String tokenUrl,
                          @Value("${api.kis.approval-url:/oauth2/Approval}") String wsApprovalUrl,
-                         RedisCacheService cache,
                          ReactiveStringRedisTemplate redis) {
         this.kisHttp = kisHttp;
         this.appKey = appKey == null ? "" : appKey.trim();
         this.appSecret = appSecret == null ? "" : appSecret.trim();
         this.tokenUrl = tokenUrl == null ? "" : tokenUrl.trim();
         this.wsApprovalUrl = wsApprovalUrl == null ? "/oauth2/Approval" : wsApprovalUrl.trim();
-        this.cache = cache;
+        // reserved for future shared cache usage
         this.redis = redis;
     }
 
     public boolean isConfigured() { return !appKey.isBlank() && !appSecret.isBlank(); }
+
+    public String appKey() { return appKey; }
 
     /** 토큰 가져오기(캐시). 만료 임박 시 자동 재발급 */
     public Mono<String> accessToken() {
@@ -72,7 +72,8 @@ public class KisAuthClient {
                 .doOnNext(tok -> {
                     // 메모리 캐시 TTL은 대략 10분로 설정(정확 TTL은 불필요)
                     cached.set(new TokenHolder(tok, System.currentTimeMillis() + 10 * 60 * 1000L));
-                });
+                })
+                .onErrorResume(e -> Mono.empty());
     }
 
     private Mono<Boolean> storeToLegacyHash(KisToken tok) {
@@ -92,7 +93,8 @@ public class KisAuthClient {
         TokenHolder nh = new TokenHolder(access, System.currentTimeMillis() + ttlSec * 1000L);
         cached.set(nh);
         return redis.opsForHash().putAll(key, m)
-                .then(redis.expire(key, Duration.ofSeconds(ttlSec)));
+                .then(redis.expire(key, Duration.ofSeconds(ttlSec)))
+                .onErrorResume(e -> Mono.just(Boolean.FALSE));
     }
 
     /** 토큰 발급 */
@@ -100,6 +102,7 @@ public class KisAuthClient {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("grant_type", "client_credentials");
         body.put("appkey", appKey);
+        // REST 토큰 발급은 appsecret 필드 사용
         body.put("appsecret", appSecret);
         String uri = (tokenUrl == null || tokenUrl.isBlank()) ? "/oauth2/tokenP" : tokenUrl;
         return kisHttp.post()
@@ -113,15 +116,49 @@ public class KisAuthClient {
                 .doOnError(e -> log.warn("KIS token issue failed: {}", e.toString()));
     }
 
-    private record TokenHolder(String accessToken, long expiresAtEpochMs) {}
+    private static final class TokenHolder {
+        final String accessToken;
+        final long expiresAtEpochMs;
+        TokenHolder(String accessToken, long expiresAtEpochMs) {
+            this.accessToken = accessToken;
+            this.expiresAtEpochMs = expiresAtEpochMs;
+        }
+    }
 
     /** 웹소켓 Approval Key 발급 */
     public Mono<String> issueWsApprovalKey() {
+        return wsApprovalKey();
+    }
+
+    /** 웹소켓 Approval Key 조회(레디스 우선, 만료 임박 시 재발급) */
+    public Mono<String> wsApprovalKey() {
+        if (!isConfigured()) return Mono.empty();
+        // SocketKisToken:* 해시에서 첫 키를 조회
+        return redis.keys("SocketKisToken:*")
+                .next()
+                .flatMap(key -> redis.opsForHash().get(key, "approval_key")
+                        .map(Object::toString)
+                        .zipWith(redis.getExpire(key).defaultIfEmpty(Duration.ZERO))
+                )
+                .flatMap(t -> {
+                    String existing = t.getT1();
+                    Duration ttl = t.getT2();
+                    if (existing != null && !existing.isBlank() && ttl != null && ttl.getSeconds() > 60) {
+                        return Mono.just(existing);
+                    }
+                    return issueWsApprovalKeyActual();
+                })
+                .switchIfEmpty(issueWsApprovalKeyActual())
+                .onErrorResume(e -> issueWsApprovalKeyActual());
+    }
+
+    private Mono<String> issueWsApprovalKeyActual() {
         if (!isConfigured()) return Mono.empty();
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("grant_type", "client_credentials");
         body.put("appkey", appKey);
-        body.put("appsecret", appSecret);
+        // WS 승인키 발급은 secretkey 필드 사용
+        body.put("secretkey", appSecret);
         String uri = (wsApprovalUrl == null || wsApprovalUrl.isBlank()) ? "/oauth2/Approval" : wsApprovalUrl;
         return kisHttp.post()
                 .uri(uri)
@@ -133,7 +170,7 @@ public class KisAuthClient {
                 .map(KisSocketToken::getApproval_key)
                 .timeout(Duration.ofSeconds(8))
                 .doOnError(e -> log.warn("KIS WS approval key issue failed: {}", e.toString()))
-                .flatMap(key -> storeWsApprovalKey(key).thenReturn(key));
+                .flatMap(key -> storeWsApprovalKey(key).onErrorResume(err -> Mono.just(Boolean.FALSE)).thenReturn(key));
     }
 
     private Mono<Boolean> storeWsApprovalKey(String key) {
@@ -144,7 +181,8 @@ public class KisAuthClient {
         // 문서 상 만료시간이 명시되지 않아 24h 기본 TTL로 저장(필요 시 조정)
         long ttlSec = 24 * 60 * 60;
         return redis.opsForHash().putAll(redisKey, m)
-                .then(redis.expire(redisKey, Duration.ofSeconds(ttlSec)));
+                .then(redis.expire(redisKey, Duration.ofSeconds(ttlSec)))
+                .onErrorResume(e -> Mono.just(Boolean.FALSE));
     }
 }
 
