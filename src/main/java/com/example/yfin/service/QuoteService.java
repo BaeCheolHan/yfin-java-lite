@@ -8,6 +8,8 @@ import com.example.yfin.model.QuoteDto;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Flux;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 
@@ -59,40 +61,43 @@ public class QuoteService {
     public Mono<List<QuoteDto>> quotes(List<String> tickers) {
         if (tickers == null || tickers.isEmpty()) return Mono.just(List.of());
         return normalizeTickers(tickers).flatMap(norm -> {
-            // 심볼을 6~8개 단위로 배치 분할하여 차단 가능성 저감
+            // 심볼을 6~8개 단위로 배치 분할
             int batchSize = 8;
             java.util.List<java.util.List<String>> batches = new java.util.ArrayList<>();
             for (int i = 0; i < norm.size(); i += batchSize) {
                 batches.add(norm.subList(i, Math.min(i + batchSize, norm.size())));
             }
 
-            java.util.List<Mono<java.util.List<QuoteDto>>> batchCalls = new java.util.ArrayList<>();
-            for (java.util.List<String> group : batches) {
-                String symbols = String.join(",", group);
-                String path = "/v7/finance/quote?symbols=" + symbols + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
-                String ref = "/quote/" + group.get(0);
-                String cacheKey = "quotes:" + symbols;
-                Mono<java.util.List<QuoteDto>> call = l2.get(cacheKey, new com.fasterxml.jackson.core.type.TypeReference<java.util.List<QuoteDto>>() {})
-                        .switchIfEmpty(
-                                yahoo.getJson(path, ref)
-                                        .onErrorResume(e -> fallbackQuotes(group))
-                                        .map(this::mapQuotes)
-                                        .flatMap(list -> l2.set(cacheKey, list, java.time.Duration.ofSeconds(15)).thenReturn(list))
-                        )
-                        .timeout(java.time.Duration.ofSeconds(12))
-                        .onErrorResume(e -> fallbackQuotes(group).map(this::mapQuotes));
-                batchCalls.add(call);
-            }
-
-            return reactor.core.publisher.Mono.zip(batchCalls, arr -> {
-                java.util.List<QuoteDto> all = new java.util.ArrayList<>();
-                for (Object o : arr) {
-                    @SuppressWarnings("unchecked")
-                    java.util.List<QuoteDto> part = (java.util.List<QuoteDto>) o;
-                    if (part != null) all.addAll(part);
-                }
-                return all;
-            }).flatMap(base -> {
+            // 배치를 직렬 처리 + 배치 간 지터로 차단 완화
+            return Flux.fromIterable(batches)
+                    .concatMap(group -> {
+                        long jitter = java.util.concurrent.ThreadLocalRandom.current().nextLong(120, 320);
+                        String symbols = String.join(",", group);
+                        String path = "/v7/finance/quote?symbols=" + symbols + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
+                        String ref = "/quote/" + group.get(0);
+                        String cacheKey = "quotes:" + symbols;
+                        Mono<java.util.List<QuoteDto>> call = l2.get(cacheKey, new com.fasterxml.jackson.core.type.TypeReference<java.util.List<QuoteDto>>() {})
+                                .switchIfEmpty(
+                                        (yahoo.isTemporarilyBlocked()
+                                                ? fallbackQuotes(group).map(this::mapQuotes)
+                                                : yahoo.getJson(path, ref)
+                                                        .onErrorResume(e -> fallbackQuotes(group))
+                                                        .map(this::mapQuotes)
+                                        )
+                                                // 캐시 TTL을 조금 늘려 차단 시 재사용 여지 확보
+                                                .flatMap(list -> l2.set(cacheKey, list, java.time.Duration.ofSeconds(45)).thenReturn(list))
+                                )
+                                .timeout(java.time.Duration.ofSeconds(12))
+                                .onErrorResume(e -> fallbackQuotes(group).map(this::mapQuotes));
+                        return reactor.core.publisher.Mono.delay(java.time.Duration.ofMillis(jitter)).then(call);
+                    }, 1)
+                    .collectList()
+                    .flatMap(parts -> {
+                        java.util.List<QuoteDto> all = new java.util.ArrayList<>();
+                        for (java.util.List<QuoteDto> p : parts) if (p != null) all.addAll(p);
+                        return Mono.just(all);
+                    })
+                    .flatMap(base -> {
                 java.util.List<String> needForward = new java.util.ArrayList<>();
                 for (QuoteDto q : base) {
                     if (q.getForwardDividendYield() == null && q.getForwardDividendRate() == null) {
@@ -107,13 +112,15 @@ public class QuoteService {
                 for (QuoteDto q : base) {
                     if (q.getForwardDividendYield() != null || q.getForwardDividendRate() != null) continue;
                     String sym = q.getSymbol();
-                    String p = "/v10/finance/quoteSummary/" + sym + "?modules=" + modules + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
-                    enrichCalls.add(
-                            yahoo.getJson(p, "/quote/" + sym)
-                                    .doOnNext(b -> enrichForward(q, b))
-                                    .onErrorResume(err -> Mono.empty())
-                                    .then()
-                    );
+                    if (!yahoo.isTemporarilyBlocked()) {
+                        String p = "/v10/finance/quoteSummary/" + sym + "?modules=" + modules + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
+                        enrichCalls.add(
+                                yahoo.getJson(p, "/quote/" + sym)
+                                        .doOnNext(b -> enrichForward(q, b))
+                                        .onErrorResume(err -> Mono.empty())
+                                        .then()
+                        );
+                    }
                 }
                 return Mono.when(enrichCalls).then(Mono.defer(() -> {
                     java.util.List<Mono<Void>> ttmCalls = new java.util.ArrayList<>();
@@ -142,6 +149,17 @@ public class QuoteService {
             String ref = "/quote/" + norm.get(0);
             return yahoo.getJson(path, ref).map(this::mapQuotes);
         });
+    }
+
+    /**
+     * WS 보조 스냅샷 용도: Yahoo 전용 호출만 수행하고, 차단 상태면 빈 리스트 반환.
+     * finnhub/alpha 폴백은 여기서 사용하지 않음(레이트리밋 보호).
+     */
+    public Mono<List<QuoteDto>> quotesSnapshotSafe(List<String> tickers) {
+        if (tickers == null || tickers.isEmpty()) return Mono.just(List.of());
+        if (yahoo.isTemporarilyBlocked()) return Mono.just(List.of());
+        return quotesEx(tickers, null)
+                .onErrorResume(e -> Mono.just(List.of()));
     }
 
     // ---------- 내부 매퍼/유틸 ----------
@@ -289,54 +307,86 @@ public class QuoteService {
 
     // --------- Fallback providers ---------
     private reactor.core.publisher.Mono<java.util.Map<String, Object>> fallbackQuotes(java.util.List<String> symbols) {
-        java.util.List<com.example.yfin.model.QuoteDto> collected = new java.util.ArrayList<>();
-        java.util.List<reactor.core.publisher.Mono<Void>> calls = new java.util.ArrayList<>();
-        for (String sym : symbols) {
-            calls.add(
-                    fallbackQuote(sym)
-                            .doOnNext(q -> { if (q != null) collected.add(q); })
-                            .onErrorResume(e -> reactor.core.publisher.Mono.empty())
-                            .then()
-            );
-        }
-        return reactor.core.publisher.Mono.when(calls).then(reactor.core.publisher.Mono.defer(() -> {
-            java.util.Map<String, Object> qr = new java.util.LinkedHashMap<>();
-            java.util.List<java.util.Map<String, Object>> result = new java.util.ArrayList<>();
-            for (com.example.yfin.model.QuoteDto q : collected) {
-                java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
-                m.put("symbol", q.getSymbol());
-                m.put("shortName", q.getShortName());
-                m.put("currency", q.getCurrency());
-                m.put("regularMarketPrice", q.getRegularMarketPrice());
-                m.put("regularMarketChange", q.getRegularMarketChange());
-                m.put("regularMarketChangePercent", q.getRegularMarketChangePercent());
-                m.put("regularMarketVolume", q.getRegularMarketVolume());
-                m.put("regularMarketPreviousClose", q.getPreviousClose());
-                m.put("regularMarketDayHigh", q.getDayHigh());
-                m.put("regularMarketDayLow", q.getDayLow());
-                m.put("fiftyTwoWeekHigh", q.getFiftyTwoWeekHigh());
-                m.put("fiftyTwoWeekLow", q.getFiftyTwoWeekLow());
-                m.put("trailingAnnualDividendRate", q.getTrailingAnnualDividendRate());
-                m.put("trailingAnnualDividendYield", q.getTrailingAnnualDividendYield());
-                m.put("dividendYield", q.getDividendYield());
-                m.put("dividendRate", q.getForwardDividendRate());
-                result.add(m);
-            }
-            qr.put("result", result);
-            java.util.Map<String, Object> body = new java.util.LinkedHashMap<>();
-            body.put("quoteResponse", qr);
-            return reactor.core.publisher.Mono.just(body);
-        }));
+        // 동시성 제한(최대 4) + 지터로 레이트리밋 완화
+        return Flux.fromIterable(symbols)
+                .flatMap(sym -> {
+                    long jitterMs = java.util.concurrent.ThreadLocalRandom.current().nextLong(50, 200);
+                    return reactor.core.publisher.Mono.delay(java.time.Duration.ofMillis(jitterMs))
+                            .then(fallbackQuote(sym))
+                            .onErrorResume(e -> reactor.core.publisher.Mono.empty());
+                }, 4)
+                .collectList()
+                .map(collected -> {
+                    java.util.Map<String, Object> qr = new java.util.LinkedHashMap<>();
+                    java.util.List<java.util.Map<String, Object>> result = new java.util.ArrayList<>();
+                    for (com.example.yfin.model.QuoteDto q : collected) {
+                        if (q == null) continue;
+                        java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+                        m.put("symbol", q.getSymbol());
+                        m.put("shortName", q.getShortName());
+                        m.put("currency", q.getCurrency());
+                        m.put("regularMarketPrice", q.getRegularMarketPrice());
+                        m.put("regularMarketChange", q.getRegularMarketChange());
+                        m.put("regularMarketChangePercent", q.getRegularMarketChangePercent());
+                        m.put("regularMarketVolume", q.getRegularMarketVolume());
+                        m.put("regularMarketPreviousClose", q.getPreviousClose());
+                        m.put("regularMarketDayHigh", q.getDayHigh());
+                        m.put("regularMarketDayLow", q.getDayLow());
+                        m.put("fiftyTwoWeekHigh", q.getFiftyTwoWeekHigh());
+                        m.put("fiftyTwoWeekLow", q.getFiftyTwoWeekLow());
+                        m.put("trailingAnnualDividendRate", q.getTrailingAnnualDividendRate());
+                        m.put("trailingAnnualDividendYield", q.getTrailingAnnualDividendYield());
+                        m.put("dividendYield", q.getDividendYield());
+                        m.put("dividendRate", q.getForwardDividendRate());
+                        result.add(m);
+                    }
+                    qr.put("result", result);
+                    java.util.Map<String, Object> body = new java.util.LinkedHashMap<>();
+                    body.put("quoteResponse", qr);
+                    return body;
+                });
     }
 
     private reactor.core.publisher.Mono<com.example.yfin.model.QuoteDto> fallbackQuote(String symbol) {
-        reactor.core.publisher.Mono<com.example.yfin.model.QuoteDto> finnh = (finnhub != null && finnhub.isEnabled())
-                ? finnhub.quote(symbol).map(m -> mapFinnhubQuote(symbol, m)).onErrorResume(e -> reactor.core.publisher.Mono.empty())
+        boolean fhEnabled = (finnhub != null && finnhub.isEnabled());
+        boolean avEnabled = (alphaVantage != null && alphaVantage.isEnabled());
+
+        reactor.core.publisher.Mono<com.example.yfin.model.QuoteDto> finnhCall = fhEnabled
+                ? finnhub.quote(symbol)
+                    .map(m -> mapFinnhubQuote(symbol, m))
                 : reactor.core.publisher.Mono.empty();
-        reactor.core.publisher.Mono<com.example.yfin.model.QuoteDto> av = (alphaVantage != null && alphaVantage.isEnabled())
-                ? alphaVantage.globalQuote(symbol).map(m -> mapAlphaVantageGlobalQuote(symbol, m)).onErrorResume(e -> reactor.core.publisher.Mono.empty())
+        reactor.core.publisher.Mono<com.example.yfin.model.QuoteDto> avCall = avEnabled
+                ? alphaVantage.globalQuote(symbol)
+                    .map(m -> mapAlphaVantageGlobalQuote(symbol, m))
                 : reactor.core.publisher.Mono.empty();
-        return finnh.switchIfEmpty(av);
+
+        // 심볼 기반 해시 분산: 절반은 Finnhub, 절반은 AlphaVantage 우선
+        boolean preferFinnhub = fhEnabled && (!avEnabled || Math.abs(symbol.hashCode()) % 2 == 0);
+        reactor.core.publisher.Mono<com.example.yfin.model.QuoteDto> primary = preferFinnhub ? finnhCall : avCall;
+        reactor.core.publisher.Mono<com.example.yfin.model.QuoteDto> secondary = preferFinnhub ? avCall : finnhCall;
+
+        long jitterMs = java.util.concurrent.ThreadLocalRandom.current().nextLong(30, 150);
+
+        return reactor.core.publisher.Mono.delay(java.time.Duration.ofMillis(jitterMs))
+                .then(primary)
+                .onErrorResume(e -> {
+                    if (isRateLimited(e)) {
+                        long backoff = java.util.concurrent.ThreadLocalRandom.current().nextLong(200, 600);
+                        return reactor.core.publisher.Mono.delay(java.time.Duration.ofMillis(backoff)).then(secondary);
+                    }
+                    return reactor.core.publisher.Mono.empty();
+                })
+                .switchIfEmpty(secondary.onErrorResume(e -> reactor.core.publisher.Mono.empty()));
+    }
+
+    private boolean isRateLimited(Throwable e) {
+        if (e == null) return false;
+        if (e instanceof WebClientResponseException w) {
+            int s = w.getStatusCode().value();
+            return s == 429 || s == 403;
+        }
+        String msg = e.getMessage();
+        return msg != null && (msg.contains("429") || msg.contains("Too Many Requests") || msg.contains("403"));
     }
 
     private com.example.yfin.model.QuoteDto mapFinnhubQuote(String symbol, java.util.Map<String, Object> body) {

@@ -55,6 +55,11 @@ public class WebClientConfig {
         return mk("https://finnhub.io");
     }
 
+    @Bean("kisHttp")
+    public WebClient kisHttp() {
+        return mk("https://openapi.koreainvestment.com:9443");
+    }
+
     @Bean
     public CookieStore cookieStore() {
         return new CookieStore();

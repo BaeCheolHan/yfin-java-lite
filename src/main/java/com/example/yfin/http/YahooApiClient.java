@@ -12,6 +12,7 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.List;
@@ -30,6 +31,7 @@ public class YahooApiClient {
 
     private volatile String crumb;
     private final AtomicInteger uaIndex = new AtomicInteger(0);
+    private final AtomicLong blockedUntilEpochMs = new AtomicLong(0);
     private static final String[] USER_AGENTS = new String[] {
             // 다양한 브라우저 UA 회전으로 Anti-bot 완화
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari",
@@ -52,6 +54,9 @@ public class YahooApiClient {
 
     public Mono<Map<String, Object>> getJson(String path, String refererPath) {
         long started = System.nanoTime();
+        if (isTemporarilyBlocked()) {
+            return Mono.error(new RuntimeException("Yahoo temporarily blocked"));
+        }
         return warmup(refererPath)
                 .then(ensureCrumb())
                 .defaultIfEmpty("")
@@ -73,6 +78,7 @@ public class YahooApiClient {
                             .then(ensureCrumb().defaultIfEmpty(""))
                             .flatMap(c4 -> doRequestJson(yahooClient2, attachCrumb(path, c4), refererPath));
                 })
+                .doOnError(err -> { if (isBlocked(err)) blockFor(Duration.ofMinutes(2)); })
                 .doOnSuccess(r -> log.debug("Yahoo GET {} took {} ms", path, (System.nanoTime()-started)/1_000_000))
                 .doOnError(err -> log.warn("Yahoo GET {} failed after {} ms: {}", path, (System.nanoTime()-started)/1_000_000, err.toString()));
     }
@@ -230,6 +236,16 @@ public class YahooApiClient {
     private String nextUserAgent() {
         int idx = Math.abs(uaIndex.getAndIncrement());
         return USER_AGENTS[idx % USER_AGENTS.length];
+    }
+
+    public boolean isTemporarilyBlocked() {
+        long until = blockedUntilEpochMs.get();
+        return until > 0 && System.currentTimeMillis() < until;
+    }
+
+    private void blockFor(Duration d) {
+        long until = System.currentTimeMillis() + d.toMillis();
+        blockedUntilEpochMs.updateAndGet(prev -> Math.max(prev, until));
     }
 }
 

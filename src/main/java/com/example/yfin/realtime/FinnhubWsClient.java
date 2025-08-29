@@ -51,8 +51,10 @@ public class FinnhubWsClient {
     public Flux<QuoteDto> subscribe(String symbol) {
         if (!isEnabled()) return Flux.empty();
         ensureConnection();
-        subCount.merge(symbol, 1, Integer::sum);
-        outbound.tryEmitNext("{\"type\":\"subscribe\",\"symbol\":\"" + symbol + "\"}");
+        int newCount = subCount.merge(symbol, 1, Integer::sum);
+        if (newCount == 1) {
+            outbound.tryEmitNext("{\"type\":\"subscribe\",\"symbol\":\"" + symbol + "\"}");
+        }
         Sinks.Many<QuoteDto> sink = symbolSinks.computeIfAbsent(symbol, k -> Sinks.many().multicast().onBackpressureBuffer());
         return sink.asFlux().doFinally(sig -> {
             // 구독자 해제 시 카운트 감소, 0되면 unsubscribe 전송
@@ -83,8 +85,12 @@ public class FinnhubWsClient {
         log.info("Connecting Finnhub WS: {}", url.replace(apiKey, "****"));
         return wsClient.execute(URI.create(url), session -> {
             connected = true;
-            // 송신: outbound sink → websocket
-            Mono<Void> send = session.send(outbound.asFlux().map(session::textMessage))
+            // 송신: outbound sink + ping 을 단일 send 스트림으로 병합
+            Flux<org.springframework.web.reactive.socket.WebSocketMessage> out = Flux.merge(
+                    outbound.asFlux().map(session::textMessage),
+                    Flux.interval(Duration.ofSeconds(15)).map(i -> session.textMessage("{\"type\":\"ping\"}"))
+            );
+            Mono<Void> send = session.send(out)
                     .doOnError(e -> log.warn("Finnhub WS send error: {}", e.toString()))
                     .then();
 
@@ -102,13 +108,7 @@ public class FinnhubWsClient {
                 }
             });
 
-            // 주기적 ping (보조)
-            Mono<Void> ping = session.send(Flux.interval(Duration.ofSeconds(15))
-                            .map(i -> session.textMessage("{\"type\":\"ping\"}")))
-                    .onErrorResume(e -> Mono.empty())
-                    .then();
-
-            return Mono.when(send, receive, resub, ping)
+            return Mono.when(send, receive, resub)
                     .doFinally(s -> connected = false);
         }).doOnError(e -> log.warn("Finnhub WS connection error: {}", e.toString()));
     }

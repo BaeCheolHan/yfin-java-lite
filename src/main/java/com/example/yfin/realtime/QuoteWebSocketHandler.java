@@ -2,6 +2,7 @@ package com.example.yfin.realtime;
 
 import com.example.yfin.http.FinnhubClient;
 import com.example.yfin.model.QuoteDto;
+import com.example.yfin.kis.KisWsClient;
 import com.example.yfin.service.QuoteService;
 import com.example.yfin.service.TickerResolver;
 import org.slf4j.Logger;
@@ -24,12 +25,14 @@ public class QuoteWebSocketHandler implements WebSocketHandler {
     private final FinnhubClient finnhub;
     private final FinnhubWsClient finnhubWs;
     private final TickerResolver resolver;
+    private final KisWsClient kisWs;
 
-    public QuoteWebSocketHandler(QuoteService quoteService, FinnhubClient finnhub, FinnhubWsClient finnhubWs, TickerResolver resolver) {
+    public QuoteWebSocketHandler(QuoteService quoteService, FinnhubClient finnhub, FinnhubWsClient finnhubWs, TickerResolver resolver, KisWsClient kisWs) {
         this.quoteService = quoteService;
         this.finnhub = finnhub;
         this.finnhubWs = finnhubWs;
         this.resolver = resolver;
+        this.kisWs = kisWs;
     }
 
     @Override
@@ -52,21 +55,24 @@ public class QuoteWebSocketHandler implements WebSocketHandler {
     }
 
     private Flux<QuoteDto> buildQuoteStream(List<String> tickers, int intervalSec) {
-        boolean useWs = (finnhubWs != null && finnhubWs.isEnabled());
+        boolean useKis = kisWs != null && kisWs.isEnabled();
+        boolean useWs = (finnhubWs != null && finnhubWs.isEnabled()) || useKis;
         if (useWs) {
-            // 심볼별 WS 구독을 머지; 가격만 빠르게 반영, 기타 필드는 폴링 보강 가능
+            // 심볼별 WS 구독을 머지 (국내 종목은 KIS가 우선)
             List<Flux<QuoteDto>> streams = new ArrayList<>();
-            for (String sym : tickers) streams.add(finnhubWs.subscribe(sym));
+            if (useKis) for (String sym : tickers) streams.add(kisWs.subscribe(sym));
+            if (finnhubWs != null && finnhubWs.isEnabled()) for (String sym : tickers) streams.add(finnhubWs.subscribe(sym));
             Flux<QuoteDto> wsFlux = Flux.merge(streams);
 
-            // 폴링 보강: 장마감/미지원 심볼에도 정기적으로 스냅샷 제공
-            int sec = Math.max(2, intervalSec);
+            // 폴링 보강: finnhub 레이트리밋 보호를 위해 Yahoo 전용 스냅샷 + 주기 축소
+            int sec = useKis ? Math.max(1, intervalSec) : Math.max(10, Math.max(2, intervalSec));
             Flux<QuoteDto> pollFlux = Flux.interval(Duration.ZERO, Duration.ofSeconds(sec))
-                    .flatMap(t -> quoteService.quotes(tickers))
+                    .flatMap(t -> quoteService.quotesSnapshotSafe(tickers))
                     .flatMapIterable(list -> list)
                     .onErrorResume(e -> Flux.empty());
 
-            return Flux.merge(wsFlux, pollFlux);
+            return Flux.merge(wsFlux, pollFlux)
+                    .distinctUntilChanged(q -> q.getSymbol() + ":" + q.getRegularMarketPrice());
         }
         int sec = (finnhub != null && finnhub.isEnabled()) ? Math.max(1, intervalSec) : Math.max(2, intervalSec);
         return Flux.interval(Duration.ZERO, Duration.ofSeconds(sec))
