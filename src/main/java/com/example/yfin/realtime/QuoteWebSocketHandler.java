@@ -41,11 +41,12 @@ public class QuoteWebSocketHandler implements WebSocketHandler {
         String tickersParam = q.getOrDefault("tickers", "");
         List<String> rawTickers = parseTickers(tickersParam);
         int intervalSec = parseInt(q.get("intervalSec"), 2);
+        String exchange = q.get("exchange");
         if (rawTickers.isEmpty()) {
             return session.send(Flux.just(session.textMessage("{" + "\"error\":\"tickers required\"}")));
         }
 
-        return normalizeTickers(rawTickers)
+        return normalizeTickers(rawTickers, exchange)
                 .flatMap(tickers -> {
                     Flux<String> stream = buildQuoteStream(tickers, intervalSec)
                             .map(this::toJson)
@@ -145,6 +146,26 @@ public class QuoteWebSocketHandler implements WebSocketHandler {
                     log.warn("normalize all timeout/failure -> using raw list: {}", e.toString());
                     return Mono.just(tickers);
                 });
+    }
+
+    private Mono<List<String>> normalizeTickers(List<String> tickers, String exchange) {
+        if (exchange == null || exchange.isBlank()) return normalizeTickers(tickers);
+        if (tickers == null || tickers.isEmpty()) return Mono.just(List.of());
+        List<Mono<String>> monos = new ArrayList<>(tickers.size());
+        for (String t : tickers) {
+            String raw = t;
+            monos.add(
+                    resolver.normalize(raw, exchange)
+                            .timeout(Duration.ofSeconds(2))
+                            .onErrorResume(e -> Mono.just(raw))
+            );
+        }
+        return Mono.zip(monos, arr -> {
+            List<String> out = new ArrayList<>(arr.length);
+            for (Object o : arr) out.add(String.valueOf(o));
+            return out;
+        }).timeout(Duration.ofSeconds(5))
+                .onErrorResume(e -> Mono.just(tickers));
     }
 }
 
