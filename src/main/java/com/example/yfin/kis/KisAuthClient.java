@@ -8,7 +8,6 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
-import com.example.yfin.service.cache.RedisCacheService;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 
 import java.time.Duration;
@@ -56,22 +55,45 @@ public class KisAuthClient {
         if (th != null && now < th.expiresAtEpochMs - 30_000) {
             return Mono.just(th.accessToken);
         }
-        // 1) 레거시 해시 저장 형태에서 조회
+        // 1) 레거시 해시에서 조회 → 2) 없으면 발급 및 저장(이전에 남은 키는 모두 삭제 후 저장)
         return readFromLegacyHash()
                 .switchIfEmpty(
-                        // 2) 없으면 발급 및 저장
-                        issueToken().flatMap(tok -> storeToLegacyHash(tok).thenReturn(tok.getAccess_token()))
+                        issueToken().flatMap(tok -> deleteLegacyTokens()
+                                .then(storeToLegacyHash(tok))
+                                .thenReturn(tok.getAccess_token()))
                 );
     }
 
+    /** 기존 레거시 토큰 키 모두 삭제 */
+    private Mono<Boolean> deleteLegacyTokens() {
+        return redis.keys("RestKisToken:*")
+                .collectList()
+                .flatMap(keys -> {
+                    if (keys == null || keys.isEmpty()) return Mono.just(Boolean.TRUE);
+                    return redis.delete(keys.toArray(new String[0]))
+                            .map(cnt -> Boolean.TRUE)
+                            .onErrorResume(e -> Mono.just(Boolean.FALSE));
+                })
+                .onErrorResume(e -> Mono.just(Boolean.FALSE));
+    }
+
     private Mono<String> readFromLegacyHash() {
-        // RestKisToken:* 키 중 하나를 읽어 access_token 반환
+        // RestKisToken:* 키 중 하나를 읽어 access_token 반환(+TTL 기반 캐시 설정)
         return redis.keys("RestKisToken:*")
                 .next()
-                .flatMap(key -> redis.opsForHash().get(key, "access_token").map(Object::toString))
-                .doOnNext(tok -> {
-                    // 메모리 캐시 TTL은 대략 10분로 설정(정확 TTL은 불필요)
-                    cached.set(new TokenHolder(tok, System.currentTimeMillis() + 10 * 60 * 1000L));
+                .flatMap(key -> redis.opsForHash().get(key, "access_token")
+                        .map(Object::toString)
+                        .zipWith(redis.getExpire(key).defaultIfEmpty(Duration.ZERO))
+                )
+                .flatMap(t -> {
+                    String tok = t.getT1();
+                    Duration ttl = t.getT2();
+                    if (tok != null && !tok.isBlank() && ttl != null && ttl.getSeconds() > 0) {
+                        long expiresAt = System.currentTimeMillis() + (ttl.getSeconds() * 1000L);
+                        cached.set(new TokenHolder(tok, expiresAt));
+                        return Mono.just(tok);
+                    }
+                    return Mono.empty();
                 })
                 .onErrorResume(e -> Mono.empty());
     }
@@ -96,6 +118,8 @@ public class KisAuthClient {
                 .then(redis.expire(key, Duration.ofSeconds(ttlSec)))
                 .onErrorResume(e -> Mono.just(Boolean.FALSE));
     }
+
+    
 
     /** 토큰 발급 */
     public Mono<KisToken> issueToken() {
