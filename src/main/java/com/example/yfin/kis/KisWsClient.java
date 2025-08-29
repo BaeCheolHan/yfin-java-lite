@@ -123,7 +123,8 @@ public class KisWsClient {
             Flux<WebSocketMessage> out = outbound.asFlux()
                     .delaySubscription(Duration.ofMillis(150))
                     .map(sym -> {
-                        String trId = SymbolUtils.determineTransactionId(sym);
+                        KisTrId trEnum = SymbolUtils.determineTransactionId(sym);
+                        String trId = trEnum.name();
                         String trKey = SymbolUtils.determineTransactionKey(sym);
                         // 구독 라우팅을 위해 tr_key → 원본 심볼 매핑 유지
                         transactionKeyToOriginalSymbols.computeIfAbsent(trKey, k -> java.util.concurrent.ConcurrentHashMap.newKeySet()).add(sym);

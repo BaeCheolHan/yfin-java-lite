@@ -1,5 +1,8 @@
 package com.example.yfin.util;
 
+import com.example.yfin.kis.KisTrId;
+import com.example.yfin.model.ExchangeSuffix;
+
 public final class SymbolUtils {
 
     private SymbolUtils() {}
@@ -9,15 +12,16 @@ public final class SymbolUtils {
      * - 접미사 KS/KQ 또는 숫자-only이면 국내 체결가(H0STCNT0)
      * - 그 외는 해외 체결(H0UNCNT0)
      */
-    public static String determineTransactionId(String symbol) {
+    public static KisTrId determineTransactionId(String symbol) {
         if (symbol != null) {
             int dot = symbol.indexOf('.');
             String suffix = dot > 0 && dot + 1 < symbol.length() ? symbol.substring(dot + 1).toUpperCase() : "";
-            if ("KS".equals(suffix) || "KQ".equals(suffix)) return "H0STCNT0";
+            ExchangeSuffix ex = ExchangeSuffix.from(suffix);
+            if (ex.isKorea()) return KisTrId.H0STCNT0;
             String left = dot > 0 ? symbol.substring(0, dot) : symbol;
-            if (left.matches("\\d+")) return "H0STCNT0";
+            if (left.matches("\\d+")) return KisTrId.H0STCNT0;
         }
-        return "H0UNCNT0";
+        return KisTrId.H0UNCNT0;
     }
 
     /**
@@ -30,8 +34,8 @@ public final class SymbolUtils {
         int dot = symbol.indexOf('.');
         String left = dot > 0 ? symbol.substring(0, dot) : symbol;
         String suffix = dot > 0 && dot + 1 < symbol.length() ? symbol.substring(dot + 1).toUpperCase() : "";
-
-        if ("KS".equals(suffix) || "KQ".equals(suffix) || left.matches("\\d+")) {
+        ExchangeSuffix ex = ExchangeSuffix.from(suffix);
+        if (ex.isKorea() || left.matches("\\d+")) {
             String digits = left.replaceAll("[^0-9]", "");
             if (!digits.isEmpty()) return digits.length() >= 6 ? digits.substring(0, 6) : digits;
             return left.toUpperCase();

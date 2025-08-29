@@ -2,6 +2,7 @@ package com.example.yfin.service;
 
 import com.example.yfin.http.YahooApiClient;
 import com.example.yfin.model.OptionRow;
+import com.example.yfin.model.OptionType;
 import com.example.yfin.model.OptionsResponse;
 import org.springframework.cache.annotation.Cacheable;
 import lombok.RequiredArgsConstructor;
@@ -82,16 +83,16 @@ public class OptionsService {
         if (puts == null) puts = List.of();
 
         List<OptionRow> callRows = new ArrayList<>(calls.size());
-        for (Map<String, Object> m : calls) callRows.add(mapOptionRow(m, "CALL", o0));
+        for (Map<String, Object> m : calls) callRows.add(mapOptionRow(m, OptionType.CALL, o0));
         List<OptionRow> putRows = new ArrayList<>(puts.size());
-        for (Map<String, Object> m : puts) putRows.add(mapOptionRow(m, "PUT", o0));
+        for (Map<String, Object> m : puts) putRows.add(mapOptionRow(m, OptionType.PUT, o0));
 
         res.setCalls(callRows);
         res.setPuts(putRows);
         return res;
     }
 
-    private OptionRow mapOptionRow(Map<String, Object> m, String type, Map<String, Object> o0) {
+    private OptionRow mapOptionRow(Map<String, Object> m, OptionType type, Map<String, Object> o0) {
         OptionRow row = new OptionRow();
         Object exp = m.get("expiration");
         if (exp instanceof Number n) row.setExpiration(Instant.ofEpochSecond(n.longValue()));
