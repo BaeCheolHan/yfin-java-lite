@@ -11,6 +11,10 @@ import org.springframework.web.reactive.socket.client.ReactorNettyWebSocketClien
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.example.yfin.util.SymbolUtils;
 
 import java.net.URI;
 import java.time.Duration;
@@ -34,19 +38,21 @@ public class KisWsClient {
     private final KisAuthClient auth;
     private final String wsUrl;
     private final ReactorNettyWebSocketClient wsClient = new ReactorNettyWebSocketClient();
+    private final ObjectMapper objectMapper;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     // 구독 요청을 버퍼링하여 재연결 시에도 유실 없이 전송
     private final Sinks.Many<String> outbound = Sinks.many().replay().limit(256);
-    private final ConcurrentMap<String, Integer> subCount = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Integer> subscriptionRefCount = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Sinks.Many<QuoteDto>> symbolSinks = new ConcurrentHashMap<>();
     // tr_key(예: 005930) -> 원본 심볼들(예: 005930.KS) 매핑
-    private final ConcurrentMap<String, Set<String>> trKeyToSymbols = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Set<String>> transactionKeyToOriginalSymbols = new ConcurrentHashMap<>();
 
     public KisWsClient(KisAuthClient auth, @Value("${api.kis.ws-url:ws://ops.koreainvestment.com:21000}") String wsUrl) {
         this.auth = auth;
         this.wsUrl = wsUrl;
+        this.objectMapper = new ObjectMapper().setSerializationInclusion(JsonInclude.Include.NON_NULL);
     }
 
     public boolean isEnabled() { return auth != null && auth.isConfigured(); }
@@ -57,7 +63,7 @@ public class KisWsClient {
         ensureConnection();
 
         // 2) 심볼 구독 ref-count 증가 (필요 시 해지 로직에서 감소)
-        subCount.merge(symbol, 1, Integer::sum);
+        subscriptionRefCount.merge(symbol, 1, Integer::sum);
 
         // 3) 심볼을 outbound 큐에 기록 → 실제 구독 메시지는 연결 후 전송 스트림에서 생성
         outbound.tryEmitNext(symbol);
@@ -66,7 +72,7 @@ public class KisWsClient {
         Sinks.Many<QuoteDto> sink = symbolSinks.computeIfAbsent(symbol, k -> Sinks.many().multicast().onBackpressureBuffer());
         return sink.asFlux().doFinally(sig -> {
             // 5) 구독 해지 감지 시 ref-count 감소
-            subCount.compute(symbol, (k, v) -> {
+            subscriptionRefCount.compute(symbol, (k, v) -> {
                 int n = (v == null ? 0 : v) - 1;
                 if (n <= 0) return null;
                 return n;
@@ -117,10 +123,10 @@ public class KisWsClient {
             Flux<WebSocketMessage> out = outbound.asFlux()
                     .delaySubscription(Duration.ofMillis(150))
                     .map(sym -> {
-                        String trId = determineTrId(sym);
-                        String trKey = determineTrKey(sym);
+                        String trId = SymbolUtils.determineTransactionId(sym);
+                        String trKey = SymbolUtils.determineTransactionKey(sym);
                         // 구독 라우팅을 위해 tr_key → 원본 심볼 매핑 유지
-                        trKeyToSymbols.computeIfAbsent(trKey, k -> java.util.concurrent.ConcurrentHashMap.newKeySet()).add(sym);
+                        transactionKeyToOriginalSymbols.computeIfAbsent(trKey, k -> java.util.concurrent.ConcurrentHashMap.newKeySet()).add(sym);
                         return session.textMessage(buildSubscribeJson(approval, trId, trKey));
                     });
             // 5) 송수신 파이프라인 구성 (에러 무시하고 재연결 루프로 복귀)
@@ -128,7 +134,6 @@ public class KisWsClient {
             Mono<Void> recv = session.receive()
                     .map(WebSocketMessage::getPayloadAsText)
                     .doOnNext(msg -> {
-                        String s = msg.length() > 300 ? msg.substring(0, 300) + "..." : msg;
                         // 간단 파서: 0|H0STCNT0|... 또는 0|H0UNCNT0|...
                         if (msg.startsWith("0|H0STCNT0|") || msg.startsWith("0|H0UNCNT0|")) {
                             String[] parts = msg.split("\\|", 4);
@@ -146,7 +151,7 @@ public class KisWsClient {
                                         try { change = Double.parseDouble(changeStr); } catch (Exception ignore2) {}
                                         Double rate = null;
                                         try { rate = Double.parseDouble(ratePctStr) / 100.0; } catch (Exception ignore3) {}
-                                        Set<String> originals = trKeyToSymbols.getOrDefault(trKey, java.util.Collections.emptySet());
+                                        Set<String> originals = transactionKeyToOriginalSymbols.getOrDefault(trKey, java.util.Collections.emptySet());
                                         for (String original : originals) {
                                             Sinks.Many<QuoteDto> sink = symbolSinks.get(original);
                                             if (sink != null) {
@@ -174,40 +179,14 @@ public class KisWsClient {
      * - 숫자만: 국내 주식 체결가(H0STCNT0)
      * - 추후 해외/호가 TR 필요 시 확장
      */
-    private String determineTrId(String symbol) {
-        // 접미사 기준으로 국내/해외 판별: KS/KQ → 국내 체결, 그 외 → 해외 체결
-        if (symbol != null) {
-            int dot = symbol.indexOf('.');
-            String suffix = dot > 0 && dot + 1 < symbol.length() ? symbol.substring(dot + 1).toUpperCase() : "";
-            if ("KS".equals(suffix) || "KQ".equals(suffix)) return "H0STCNT0";
-            // 접미사 없으나 완전 숫자(구형 형태)면 국내로 간주
-            String left = dot > 0 ? symbol.substring(0, dot) : symbol;
-            if (left.matches("\\d+")) return "H0STCNT0";
-        }
-        return "H0UNCNT0";
-    }
+    // moved to SymbolUtils
 
     /**
      * TR 별 tr_key 정규화
      * - 국내: 숫자 6자리만 허용 (예: 005930.KS → 005930)
      * - 해외/기타: 우선 원문 유지 (추후 규칙 확장)
      */
-    private String determineTrKey(String symbol) {
-        if (symbol == null) return "";
-        int dot = symbol.indexOf('.');
-        String left = dot > 0 ? symbol.substring(0, dot) : symbol;
-        String suffix = dot > 0 && dot + 1 < symbol.length() ? symbol.substring(dot + 1).toUpperCase() : "";
-
-        // 국내: 접미사 KS/KQ 또는 숫자-only로 판단 → 숫자만 추출하여 전달
-        if ("KS".equals(suffix) || "KQ".equals(suffix) || left.matches("\\d+")) {
-            String digits = left.replaceAll("[^0-9]", "");
-            if (!digits.isEmpty()) return digits.length() >= 6 ? digits.substring(0, 6) : digits;
-            // 숫자를 전혀 추출 못하면 최후에는 원문 left 사용
-            return left.toUpperCase();
-        }
-        // 해외: 접미사 제거 후 심볼만(대문자) 사용
-        return left.toUpperCase();
-    }
+    // moved to SymbolUtils
 
     // === Helper builders ===
 
@@ -230,18 +209,70 @@ public class KisWsClient {
      * 로그인 JSON 생성
      */
     private String buildLoginJson(String approval) {
-        return "{" +
-                "\"header\":{\"appkey\":\"" + auth.appKey() + "\",\"approval_key\":\"" + approval + "\",\"custtype\":\"P\",\"tr_type\":\"1\",\"content-type\":\"application/json; charset=utf-8\"}," +
-                "\"body\":{\"input\":{}}}";
+        try {
+            WsHeader header = new WsHeader();
+            header.appkey = auth.appKey();
+            header.approval_key = approval;
+            header.custtype = "P";
+            header.tr_type = "1";
+            header.content_type = "application/json; charset=utf-8";
+
+            WsEnvelope envelope = new WsEnvelope();
+            envelope.header = header;
+            envelope.body = new WsBody();
+            envelope.body.input = new java.util.LinkedHashMap<>();
+
+            return objectMapper.writeValueAsString(envelope);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to build login json", e);
+        }
     }
 
     /**
      * 구독 JSON 생성 (header/body.input 모두 동일 tr_id 필요)
      */
     private String buildSubscribeJson(String approval, String trId, String symbol) {
-        return "{" +
-                "\"header\":{\"appkey\":\"" + auth.appKey() + "\",\"approval_key\":\"" + approval + "\",\"custtype\":\"P\",\"tr_type\":\"1\",\"content-type\":\"application/json; charset=utf-8\",\"tr_id\":\"" + trId + "\"}," +
-                "\"body\":{\"input\":{\"tr_id\":\"" + trId + "\",\"tr_key\":\"" + symbol + "\"}}}";
+        try {
+            WsHeader header = new WsHeader();
+            header.appkey = auth.appKey();
+            header.approval_key = approval;
+            header.custtype = "P";
+            header.tr_type = "1";
+            header.content_type = "application/json; charset=utf-8";
+            header.tr_id = trId;
+
+            WsEnvelope envelope = new WsEnvelope();
+            envelope.header = header;
+            envelope.body = new WsBody();
+            java.util.Map<String, Object> input = new java.util.LinkedHashMap<>();
+            input.put("tr_id", trId);
+            input.put("tr_key", symbol);
+            envelope.body.input = input;
+
+            return objectMapper.writeValueAsString(envelope);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to build subscribe json", e);
+        }
+    }
+
+    // === DTOs for WS payloads ===
+    static class WsEnvelope {
+        public WsHeader header;
+        public WsBody body;
+    }
+
+    static class WsHeader {
+        public String appkey;
+        public String approval_key;
+        public String custtype;
+        public String tr_type;
+        @JsonProperty("content-type")
+        public String content_type;
+        public String tr_id;
+    }
+
+    static class WsBody {
+        public java.util.Map<String, Object> input;
     }
 }
 

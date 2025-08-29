@@ -4,19 +4,17 @@ import com.example.yfin.model.QuoteDto;
 import com.example.yfin.model.portfolio.PortfolioSummary;
 import com.example.yfin.model.portfolio.PositionDto;
 import org.springframework.stereotype.Service;
+import lombok.RequiredArgsConstructor;
 import reactor.core.publisher.Mono;
 
 import java.util.ArrayList;
 import java.util.List;
 
 @Service
+@RequiredArgsConstructor
 public class PortfolioService {
 
     private final QuoteService quoteService;
-
-    public PortfolioService(QuoteService quoteService) {
-        this.quoteService = quoteService;
-    }
 
     public Mono<PortfolioSummary> summarize(List<PositionDto> positions) {
         if (positions == null || positions.isEmpty()) return Mono.just(new PortfolioSummary());

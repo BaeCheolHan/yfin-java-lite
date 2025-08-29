@@ -4,7 +4,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Getter;
 import lombok.Setter;
 
-@Schema(description = "재무제표 요약 응답")
+@Schema(description = "재무제표 요약 응답 - 단일 항목(summary) 포함")
 @Getter
 @Setter
 public class FinancialsResponse {

@@ -25,39 +25,29 @@ import java.util.List;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import lombok.RequiredArgsConstructor;
 
 @RestController
 @Tag(name = "Market API", description = "시세/차트/배당/옵션/재무 API 집합")
+@RequiredArgsConstructor
 public class ApiController {
 
-    private final QuoteService quoteSvc;
-    private final ChartService chartSvc;
-    private final DividendsService divSvc;
-    private final OptionsService optSvc;
-    private final FundamentalsService fundSvc;
-    private final SearchService searchSvc;
+    private final QuoteService quoteService;
+    private final ChartService chartService;
+    private final DividendsService dividendsService;
+    private final OptionsService optionsService;
+    private final FundamentalsService fundamentalsService;
+    private final SearchService searchService;
 
-    public ApiController(QuoteService quoteSvc,
-                         ChartService chartSvc,
-                         DividendsService divSvc,
-                         OptionsService optSvc,
-                         FundamentalsService fundSvc,
-                         SearchService searchSvc) {
-        this.quoteSvc = quoteSvc;
-        this.chartSvc = chartSvc;
-        this.divSvc = divSvc;
-        this.optSvc = optSvc;
-        this.fundSvc = fundSvc;
-        this.searchSvc = searchSvc;
-    }
+    
 
     @GetMapping("/quote")
     @Operation(summary = "단일 종목 시세 조회", description = "KR/US 티커 지원. 한국 6자리 숫자는 자동으로 거래소 접미사(.KS/.KQ)를 판별합니다. 필요 시 exchange 파라미터로 강제 지정 가능")
     public Mono<QuoteDto> quote(
             @Parameter(description = "티커. 예) 005930 또는 005930.KS, AAPL") @RequestParam String ticker,
             @Parameter(description = "거래소 접미사 수동 지정. 예) KS, KQ, NASDAQ 등") @RequestParam(required = false) String exchange) {
-        String t = ticker.trim().toUpperCase();
-        return exchange == null ? quoteSvc.quote(t) : quoteSvc.quoteEx(t, exchange);
+        String normalizedTicker = ticker.trim().toUpperCase();
+        return exchange == null ? quoteService.quote(normalizedTicker) : quoteService.quoteEx(normalizedTicker, exchange);
     }
 
     @GetMapping("/quotes")
@@ -65,11 +55,11 @@ public class ApiController {
     public Mono<List<QuoteDto>> quotes(
             @Parameter(description = "티커 목록(쉼표 구분). 예) 005930,000660 또는 AAPL,MSFT") @RequestParam String tickers,
             @Parameter(description = "거래소 접미사 수동 지정(선택)") @RequestParam(required = false) String exchange) {
-        List<String> list = Arrays.stream(tickers.split(","))
+        List<String> tickerList = Arrays.stream(tickers.split(","))
                 .map(s -> s.trim().toUpperCase())
                 .filter(s -> !s.isBlank())
                 .toList();
-        return exchange == null ? quoteSvc.quotes(list) : quoteSvc.quotesEx(list, exchange);
+        return exchange == null ? quoteService.quotes(tickerList) : quoteService.quotesEx(tickerList, exchange);
     }
 
     @GetMapping("/history")
@@ -80,9 +70,9 @@ public class ApiController {
             @Parameter(description = "간격. 예) 1m,5m,15m,1d,1wk,1mo") @RequestParam String interval,
             @Parameter(description = "배당/분할 자동 보정 여부") @RequestParam(defaultValue = "true") boolean autoAdjust,
             @Parameter(description = "거래소 접미사 수동 지정(선택)") @RequestParam(required = false) String exchange) {
-        String t = ticker.trim().toUpperCase();
-        return exchange == null ? chartSvc.history(t, range, interval, autoAdjust)
-                : chartSvc.historyEx(t, range, interval, autoAdjust, exchange);
+        String normalizedTicker = ticker.trim().toUpperCase();
+        return exchange == null ? chartService.history(normalizedTicker, range, interval, autoAdjust)
+                : chartService.historyEx(normalizedTicker, range, interval, autoAdjust, exchange);
     }
 
     @GetMapping("/dividends")
@@ -91,8 +81,8 @@ public class ApiController {
             @Parameter(description = "티커") @RequestParam String ticker,
             @Parameter(description = "조회 범위. 기본 5y") @RequestParam(defaultValue = "5y") String range,
             @Parameter(description = "거래소 접미사 수동 지정(선택)") @RequestParam(required = false) String exchange) {
-        String t = ticker.trim().toUpperCase();
-        return exchange == null ? divSvc.dividends(t, range) : divSvc.dividendsEx(t, range, exchange);
+        String normalizedTicker = ticker.trim().toUpperCase();
+        return exchange == null ? dividendsService.dividends(normalizedTicker, range) : dividendsService.dividendsEx(normalizedTicker, range, exchange);
     }
 
     @GetMapping("/options")
@@ -101,8 +91,8 @@ public class ApiController {
             @Parameter(description = "티커") @RequestParam String ticker,
             @Parameter(description = "만기일(epoch seconds). 미지정 시 최근 만기") @RequestParam(required = false) String expiration,
             @Parameter(description = "거래소 접미사 수동 지정(선택)") @RequestParam(required = false) String exchange) {
-        String t = ticker.trim().toUpperCase();
-        return exchange == null ? optSvc.options(t, expiration) : optSvc.optionsEx(t, expiration, exchange);
+        String normalizedTicker = ticker.trim().toUpperCase();
+        return exchange == null ? optionsService.options(normalizedTicker, expiration) : optionsService.optionsEx(normalizedTicker, expiration, exchange);
     }
 
     @GetMapping("/financials")
@@ -110,8 +100,8 @@ public class ApiController {
     public Mono<FinancialsResponse> financials(
             @Parameter(description = "티커") @RequestParam String ticker,
             @Parameter(description = "거래소 접미사 수동 지정(선택)") @RequestParam(required = false) String exchange) {
-        String t = ticker.trim().toUpperCase();
-        return exchange == null ? fundSvc.financials(t) : fundSvc.financialsEx(t, exchange);
+        String normalizedTicker = ticker.trim().toUpperCase();
+        return exchange == null ? fundamentalsService.financials(normalizedTicker) : fundamentalsService.financialsEx(normalizedTicker, exchange);
     }
 
     @GetMapping("/earnings")
@@ -119,8 +109,8 @@ public class ApiController {
     public Mono<EarningsResponse> earnings(
             @Parameter(description = "티커") @RequestParam String ticker,
             @Parameter(description = "거래소 접미사 수동 지정(선택)") @RequestParam(required = false) String exchange) {
-        String t = ticker.trim().toUpperCase();
-        return exchange == null ? fundSvc.earnings(t) : fundSvc.earningsEx(t, exchange);
+        String normalizedTicker = ticker.trim().toUpperCase();
+        return exchange == null ? fundamentalsService.earnings(normalizedTicker) : fundamentalsService.earningsEx(normalizedTicker, exchange);
     }
 
     @GetMapping("/calendar")
@@ -128,8 +118,8 @@ public class ApiController {
     public Mono<CalendarResponse> calendar(
             @Parameter(description = "티커") @RequestParam String ticker,
             @Parameter(description = "거래소 접미사 수동 지정(선택)") @RequestParam(required = false) String exchange) {
-        String t = ticker.trim().toUpperCase();
-        return exchange == null ? fundSvc.calendar(t) : fundSvc.calendarEx(t, exchange);
+        String normalizedTicker = ticker.trim().toUpperCase();
+        return exchange == null ? fundamentalsService.calendar(normalizedTicker) : fundamentalsService.calendarEx(normalizedTicker, exchange);
     }
 
     @GetMapping("/earnings/dates")
@@ -138,7 +128,7 @@ public class ApiController {
             @Parameter(description = "티커") @RequestParam String ticker,
             @Parameter(description = "거래소 접미사 수동 지정(선택)") @RequestParam(required = false) String exchange) {
         String t = ticker.trim().toUpperCase();
-        return exchange == null ? fundSvc.earningsDates(t) : fundSvc.earningsDatesEx(t, exchange);
+        return exchange == null ? fundamentalsService.earningsDates(t) : fundamentalsService.earningsDatesEx(t, exchange);
     }
 
     @GetMapping("/profile")
@@ -146,8 +136,8 @@ public class ApiController {
     public Mono<ProfileResponse> profile(
             @Parameter(description = "티커") @RequestParam String ticker,
             @Parameter(description = "거래소 접미사 수동 지정(선택)") @RequestParam(required = false) String exchange) {
-        String t = ticker.trim().toUpperCase();
-        return exchange == null ? fundSvc.profile(t) : fundSvc.profileEx(t, exchange);
+        String normalizedTicker = ticker.trim().toUpperCase();
+        return exchange == null ? fundamentalsService.profile(normalizedTicker) : fundamentalsService.profileEx(normalizedTicker, exchange);
     }
 
     @GetMapping("/search")
@@ -157,7 +147,7 @@ public class ApiController {
             @Parameter(description = "반환 개수(최대 50)") @RequestParam(defaultValue = "10") int count,
             @Parameter(description = "언어 코드, 예) ko-KR/en-US") @RequestParam(required = false) String lang,
             @Parameter(description = "지역 코드, 예) KR/US") @RequestParam(required = false) String region) {
-        return searchSvc.search(q, count, lang, region);
+        return searchService.search(q, count, lang, region);
     }
 
     @GetMapping("/search/google")
@@ -166,7 +156,7 @@ public class ApiController {
             @Parameter(description = "검색어") @RequestParam String q,
             @Parameter(description = "반환 개수(최대 50)") @RequestParam(defaultValue = "10") int count,
             @Parameter(description = "언어 코드, 예) ko") @RequestParam(required = false) String lang) {
-        return searchSvc.searchGoogle(q, count, lang);
+        return searchService.searchGoogle(q, count, lang);
     }
 
     // 대체 경로(일부 환경에서 /search/google 정적 리소스 충돌 시 사용)
@@ -176,6 +166,6 @@ public class ApiController {
             @Parameter(description = "검색어") @RequestParam String q,
             @Parameter(description = "반환 개수(최대 50)") @RequestParam(defaultValue = "10") int count,
             @Parameter(description = "언어 코드, 예) ko") @RequestParam(required = false) String lang) {
-        return searchSvc.searchGoogle(q, count, lang);
+        return searchService.searchGoogle(q, count, lang);
     }
 }

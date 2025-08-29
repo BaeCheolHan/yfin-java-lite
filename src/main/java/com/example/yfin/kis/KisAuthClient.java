@@ -50,17 +50,17 @@ public class KisAuthClient {
     /** 토큰 가져오기(캐시). 만료 임박 시 자동 재발급 */
     public Mono<String> accessToken() {
         if (!isConfigured()) return Mono.empty();
-        TokenHolder th = cached.get();
-        long now = System.currentTimeMillis();
-        if (th != null && now < th.expiresAtEpochMs - 30_000) {
-            return Mono.just(th.accessToken);
+        TokenHolder cachedTokenHolder = cached.get();
+        long nowEpochMs = System.currentTimeMillis();
+        if (cachedTokenHolder != null && nowEpochMs < cachedTokenHolder.expiresAtEpochMs - 30_000) {
+            return Mono.just(cachedTokenHolder.accessToken);
         }
         // 1) 레거시 해시에서 조회 → 2) 없으면 발급 및 저장(이전에 남은 키는 모두 삭제 후 저장)
         return readFromLegacyHash()
                 .switchIfEmpty(
-                        issueToken().flatMap(tok -> deleteLegacyTokens()
-                                .then(storeToLegacyHash(tok))
-                                .thenReturn(tok.getAccess_token()))
+                        issueToken().flatMap(issuedToken -> deleteLegacyTokens()
+                                .then(storeToLegacyHash(issuedToken))
+                                .thenReturn(issuedToken.getAccess_token()))
                 );
     }
 
@@ -85,37 +85,37 @@ public class KisAuthClient {
                         .map(Object::toString)
                         .zipWith(redis.getExpire(key).defaultIfEmpty(Duration.ZERO))
                 )
-                .flatMap(t -> {
-                    String tok = t.getT1();
-                    Duration ttl = t.getT2();
-                    if (tok != null && !tok.isBlank() && ttl != null && ttl.getSeconds() > 0) {
-                        long expiresAt = System.currentTimeMillis() + (ttl.getSeconds() * 1000L);
-                        cached.set(new TokenHolder(tok, expiresAt));
-                        return Mono.just(tok);
+                .flatMap(tokenAndTtl -> {
+                    String accessToken = tokenAndTtl.getT1();
+                    Duration ttl = tokenAndTtl.getT2();
+                    if (accessToken != null && !accessToken.isBlank() && ttl != null && ttl.getSeconds() > 0) {
+                        long expiresAtEpochMs = System.currentTimeMillis() + (ttl.getSeconds() * 1000L);
+                        cached.set(new TokenHolder(accessToken, expiresAtEpochMs));
+                        return Mono.just(accessToken);
                     }
                     return Mono.empty();
                 })
                 .onErrorResume(e -> Mono.empty());
     }
 
-    private Mono<Boolean> storeToLegacyHash(KisToken tok) {
-        String access = tok.getAccess_token();
-        if (access == null || access.isBlank()) return Mono.just(Boolean.FALSE);
-        String key = "RestKisToken:" + access;
-        long ttlSec = (tok.getExpires_in() == null ? 0L : Math.max(1L, tok.getExpires_in() - 10L));
-        java.time.LocalDateTime exp = java.time.LocalDateTime.now().plusSeconds(ttlSec);
+    private Mono<Boolean> storeToLegacyHash(KisToken token) {
+        String accessToken = token.getAccess_token();
+        if (accessToken == null || accessToken.isBlank()) return Mono.just(Boolean.FALSE);
+        String redisKey = "RestKisToken:" + accessToken;
+        long ttlSec = (token.getExpires_in() == null ? 0L : Math.max(1L, token.getExpires_in() - 10L));
+        java.time.LocalDateTime expiresAt = java.time.LocalDateTime.now().plusSeconds(ttlSec);
         java.time.format.DateTimeFormatter fmt = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-        java.util.Map<String, String> m = new java.util.LinkedHashMap<>();
-        m.put("access_token_token_expired", exp.format(fmt));
-        m.put("expires_in", String.valueOf(ttlSec));
-        m.put("_class", "com.my.stock.stockmanager.redis.entity.RestKisToken");
-        m.put("token_type", tok.getToken_type() == null ? "Bearer" : tok.getToken_type());
-        m.put("access_token", access);
+        java.util.Map<String, String> values = new java.util.LinkedHashMap<>();
+        values.put("access_token_token_expired", expiresAt.format(fmt));
+        values.put("expires_in", String.valueOf(ttlSec));
+        values.put("_class", "com.my.stock.stockmanager.redis.entity.RestKisToken");
+        values.put("token_type", token.getToken_type() == null ? "Bearer" : token.getToken_type());
+        values.put("access_token", accessToken);
 
-        TokenHolder nh = new TokenHolder(access, System.currentTimeMillis() + ttlSec * 1000L);
-        cached.set(nh);
-        return redis.opsForHash().putAll(key, m)
-                .then(redis.expire(key, Duration.ofSeconds(ttlSec)))
+        TokenHolder newHolder = new TokenHolder(accessToken, System.currentTimeMillis() + ttlSec * 1000L);
+        cached.set(newHolder);
+        return redis.opsForHash().putAll(redisKey, values)
+                .then(redis.expire(redisKey, Duration.ofSeconds(ttlSec)))
                 .onErrorResume(e -> Mono.just(Boolean.FALSE));
     }
 

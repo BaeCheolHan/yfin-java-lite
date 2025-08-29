@@ -7,6 +7,7 @@ import com.example.yfin.http.FinnhubClient;
 import com.example.yfin.model.QuoteDto;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
+import lombok.RequiredArgsConstructor;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Flux;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
@@ -18,32 +19,21 @@ import java.util.List;
 import java.util.Map;
 
 @Service
+@RequiredArgsConstructor
 public class QuoteService {
 
-    private final YahooApiClient yahoo;
-    private final TickerResolver resolver;
-    private final com.example.yfin.service.cache.RedisCacheService l2;
+    private final YahooApiClient yahooApiClient;
+    private final TickerResolver tickerResolver;
+    private final com.example.yfin.service.cache.RedisCacheService level2Cache;
     private final DividendsService dividendsService;
-    private final AlphaVantageClient alphaVantage;
-    private final FinnhubClient finnhub;
+    private final AlphaVantageClient alphaVantageClient;
+    private final FinnhubClient finnhubClient;
 
-    public QuoteService(YahooApiClient yahoo,
-                        TickerResolver resolver,
-                        com.example.yfin.service.cache.RedisCacheService l2,
-                        DividendsService dividendsService,
-                        AlphaVantageClient alphaVantage,
-                        FinnhubClient finnhub) {
-        this.yahoo = yahoo;
-        this.resolver = resolver;
-        this.l2 = l2;
-        this.dividendsService = dividendsService;
-        this.alphaVantage = alphaVantage;
-        this.finnhub = finnhub;
-    }
+    
 
     @Cacheable(cacheNames = "quote", key = "#ticker")
     public Mono<QuoteDto> quote(String ticker) {
-        return resolver.normalize(ticker)
+        return tickerResolver.normalize(ticker)
                 .flatMap(nt -> quotes(List.of(nt))
                         .flatMap(list -> list.isEmpty()
                                 ? Mono.error(new NotFoundException("Ticker not found: " + nt))
@@ -51,7 +41,7 @@ public class QuoteService {
     }
 
     public Mono<QuoteDto> quoteEx(String ticker, String exchange) {
-        return resolver.normalize(ticker, exchange)
+        return tickerResolver.normalize(ticker, exchange)
                 .flatMap(nt -> quotes(List.of(nt))
                         .flatMap(list -> list.isEmpty()
                                 ? Mono.error(new NotFoundException("Ticker not found: " + nt))
@@ -76,16 +66,16 @@ public class QuoteService {
                         String path = "/v7/finance/quote?symbols=" + symbols + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
                         String ref = "/quote/" + group.get(0);
                         String cacheKey = "quotes:" + symbols;
-                        Mono<java.util.List<QuoteDto>> call = l2.get(cacheKey, new com.fasterxml.jackson.core.type.TypeReference<java.util.List<QuoteDto>>() {})
+                        Mono<java.util.List<QuoteDto>> call = level2Cache.get(cacheKey, new com.fasterxml.jackson.core.type.TypeReference<java.util.List<QuoteDto>>() {})
                                 .switchIfEmpty(
-                                        (yahoo.isTemporarilyBlocked()
+                                        (yahooApiClient.isTemporarilyBlocked()
                                                 ? fallbackQuotes(group).map(this::mapQuotes)
-                                                : yahoo.getJson(path, ref)
+                                                : yahooApiClient.getJson(path, ref)
                                                         .onErrorResume(e -> fallbackQuotes(group))
                                                         .map(this::mapQuotes)
                                         )
                                                 // 캐시 TTL을 조금 늘려 차단 시 재사용 여지 확보
-                                                .flatMap(list -> l2.set(cacheKey, list, java.time.Duration.ofSeconds(45)).thenReturn(list))
+                                                .flatMap(list -> level2Cache.set(cacheKey, list, java.time.Duration.ofSeconds(45)).thenReturn(list))
                                 )
                                 .timeout(java.time.Duration.ofSeconds(12))
                                 .onErrorResume(e -> fallbackQuotes(group).map(this::mapQuotes));
@@ -112,10 +102,10 @@ public class QuoteService {
                 for (QuoteDto q : base) {
                     if (q.getForwardDividendYield() != null || q.getForwardDividendRate() != null) continue;
                     String sym = q.getSymbol();
-                    if (!yahoo.isTemporarilyBlocked()) {
+                    if (!yahooApiClient.isTemporarilyBlocked()) {
                         String p = "/v10/finance/quoteSummary/" + sym + "?modules=" + modules + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
                         enrichCalls.add(
-                                yahoo.getJson(p, "/quote/" + sym)
+                                yahooApiClient.getJson(p, "/quote/" + sym)
                                         .doOnNext(b -> enrichForward(q, b))
                                         .onErrorResume(err -> Mono.empty())
                                         .then()
@@ -147,7 +137,7 @@ public class QuoteService {
             String symbols = String.join(",", norm);
             String path = "/v7/finance/quote?symbols=" + symbols + "&lang=en-US&region=US&corsDomain=finance.yahoo.com";
             String ref = "/quote/" + norm.get(0);
-            return yahoo.getJson(path, ref).map(this::mapQuotes);
+            return yahooApiClient.getJson(path, ref).map(this::mapQuotes);
         });
     }
 
@@ -157,7 +147,7 @@ public class QuoteService {
      */
     public Mono<List<QuoteDto>> quotesSnapshotSafe(List<String> tickers) {
         if (tickers == null || tickers.isEmpty()) return Mono.just(List.of());
-        if (yahoo.isTemporarilyBlocked()) return Mono.just(List.of());
+        if (yahooApiClient.isTemporarilyBlocked()) return Mono.just(List.of());
         return quotesEx(tickers, null)
                 .onErrorResume(e -> Mono.just(List.of()));
     }
@@ -233,7 +223,7 @@ public class QuoteService {
         for (String t : tickers) {
             String raw = t;
             monos.add(
-                    resolver.normalize(raw)
+                    tickerResolver.normalize(raw)
                             .timeout(java.time.Duration.ofSeconds(2))
                             .onErrorResume(e -> reactor.core.publisher.Mono.just(raw))
             );
@@ -251,7 +241,7 @@ public class QuoteService {
         for (String t : tickers) {
             String raw = t;
             monos.add(
-                    resolver.normalize(raw, exchange)
+                    tickerResolver.normalize(raw, exchange)
                             .timeout(java.time.Duration.ofSeconds(2))
                             .onErrorResume(e -> reactor.core.publisher.Mono.just(raw))
             );
@@ -348,15 +338,15 @@ public class QuoteService {
     }
 
     private reactor.core.publisher.Mono<com.example.yfin.model.QuoteDto> fallbackQuote(String symbol) {
-        boolean fhEnabled = (finnhub != null && finnhub.isEnabled());
-        boolean avEnabled = (alphaVantage != null && alphaVantage.isEnabled());
+        boolean fhEnabled = (finnhubClient != null && finnhubClient.isEnabled());
+        boolean avEnabled = (alphaVantageClient != null && alphaVantageClient.isEnabled());
 
         reactor.core.publisher.Mono<com.example.yfin.model.QuoteDto> finnhCall = fhEnabled
-                ? finnhub.quote(symbol)
+                ? finnhubClient.getQuote(symbol)
                     .map(m -> mapFinnhubQuote(symbol, m))
                 : reactor.core.publisher.Mono.empty();
         reactor.core.publisher.Mono<com.example.yfin.model.QuoteDto> avCall = avEnabled
-                ? alphaVantage.globalQuote(symbol)
+                ? alphaVantageClient.getQuote(symbol)
                     .map(m -> mapAlphaVantageGlobalQuote(symbol, m))
                 : reactor.core.publisher.Mono.empty();
 

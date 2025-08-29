@@ -29,7 +29,7 @@ public class FinnhubClient {
     public boolean isEnabled() { return !apiKey.isBlank(); }
 
     /** Quote endpoint: https://finnhub.io/api/v1/quote?symbol=AAPL&token=... */
-    public Mono<Map<String, Object>> quote(String symbol) {
+    public Mono<Map<String, Object>> getQuote(String symbol) {
         if (!isEnabled()) return Mono.empty();
         return http.get()
                 .uri(uriBuilder -> uriBuilder

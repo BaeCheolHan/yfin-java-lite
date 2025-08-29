@@ -3,6 +3,7 @@ package com.example.yfin.service;
 import com.example.yfin.model.QuoteDto;
 import com.example.yfin.repo.ListingMetaRepository;
 import org.springframework.stereotype.Service;
+import lombok.RequiredArgsConstructor;
 import reactor.core.publisher.Mono;
 
 import java.util.ArrayList;
@@ -12,15 +13,11 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
+@RequiredArgsConstructor
 public class ScreenerService {
 
     private final ListingMetaRepository listingRepo;
     private final QuoteService quoteService;
-
-    public ScreenerService(ListingMetaRepository listingRepo, QuoteService quoteService) {
-        this.listingRepo = listingRepo;
-        this.quoteService = quoteService;
-    }
 
     public Mono<List<QuoteDto>> filterBy(String market,
                                          Double minDividendYield,
