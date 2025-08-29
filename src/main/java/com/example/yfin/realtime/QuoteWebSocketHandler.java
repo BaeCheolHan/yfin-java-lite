@@ -57,7 +57,16 @@ public class QuoteWebSocketHandler implements WebSocketHandler {
             // 심볼별 WS 구독을 머지; 가격만 빠르게 반영, 기타 필드는 폴링 보강 가능
             List<Flux<QuoteDto>> streams = new ArrayList<>();
             for (String sym : tickers) streams.add(finnhubWs.subscribe(sym));
-            return Flux.merge(streams);
+            Flux<QuoteDto> wsFlux = Flux.merge(streams);
+
+            // 폴링 보강: 장마감/미지원 심볼에도 정기적으로 스냅샷 제공
+            int sec = Math.max(2, intervalSec);
+            Flux<QuoteDto> pollFlux = Flux.interval(Duration.ZERO, Duration.ofSeconds(sec))
+                    .flatMap(t -> quoteService.quotes(tickers))
+                    .flatMapIterable(list -> list)
+                    .onErrorResume(e -> Flux.empty());
+
+            return Flux.merge(wsFlux, pollFlux);
         }
         int sec = (finnhub != null && finnhub.isEnabled()) ? Math.max(1, intervalSec) : Math.max(2, intervalSec);
         return Flux.interval(Duration.ZERO, Duration.ofSeconds(sec))
@@ -110,12 +119,26 @@ public class QuoteWebSocketHandler implements WebSocketHandler {
     private Mono<List<String>> normalizeTickers(List<String> tickers) {
         if (tickers == null || tickers.isEmpty()) return Mono.just(List.of());
         List<Mono<String>> monos = new ArrayList<>(tickers.size());
-        for (String t : tickers) monos.add(resolver.normalize(t));
+        for (String t : tickers) {
+            String raw = t;
+            monos.add(
+                    resolver.normalize(raw)
+                            .timeout(Duration.ofSeconds(2))
+                            .onErrorResume(e -> {
+                                log.warn("normalize timeout/failure for {} -> fallback raw: {}", raw, e.toString());
+                                return Mono.just(raw);
+                            })
+            );
+        }
         return Mono.zip(monos, arr -> {
             List<String> out = new ArrayList<>(arr.length);
             for (Object o : arr) out.add(String.valueOf(o));
             return out;
-        });
+        }).timeout(Duration.ofSeconds(5))
+                .onErrorResume(e -> {
+                    log.warn("normalize all timeout/failure -> using raw list: {}", e.toString());
+                    return Mono.just(tickers);
+                });
     }
 }
 

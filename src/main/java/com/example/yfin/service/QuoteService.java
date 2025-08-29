@@ -189,22 +189,38 @@ public class QuoteService {
     }
     private Mono<List<String>> normalizeTickers(List<String> tickers) {
         List<Mono<String>> monos = new ArrayList<>(tickers.size());
-        for (String t : tickers) monos.add(resolver.normalize(t));
-        return Mono.zip(monos, arr -> {
+        for (String t : tickers) {
+            String raw = t;
+            monos.add(
+                    resolver.normalize(raw)
+                            .timeout(java.time.Duration.ofSeconds(2))
+                            .onErrorResume(e -> reactor.core.publisher.Mono.just(raw))
+            );
+        }
+        return reactor.core.publisher.Mono.zip(monos, arr -> {
             List<String> out = new ArrayList<>(arr.length);
             for (Object o : arr) out.add(String.valueOf(o));
             return out;
-        });
+        }).timeout(java.time.Duration.ofSeconds(5))
+                .onErrorResume(e -> reactor.core.publisher.Mono.just(tickers));
     }
     private Mono<List<String>> normalizeTickers(List<String> tickers, String exchange) {
         if (exchange == null || exchange.isBlank()) return normalizeTickers(tickers);
         List<Mono<String>> monos = new ArrayList<>(tickers.size());
-        for (String t : tickers) monos.add(resolver.normalize(t, exchange));
-        return Mono.zip(monos, arr -> {
+        for (String t : tickers) {
+            String raw = t;
+            monos.add(
+                    resolver.normalize(raw, exchange)
+                            .timeout(java.time.Duration.ofSeconds(2))
+                            .onErrorResume(e -> reactor.core.publisher.Mono.just(raw))
+            );
+        }
+        return reactor.core.publisher.Mono.zip(monos, arr -> {
             List<String> out = new ArrayList<>(arr.length);
             for (Object o : arr) out.add(String.valueOf(o));
             return out;
-        });
+        }).timeout(java.time.Duration.ofSeconds(5))
+                .onErrorResume(e -> reactor.core.publisher.Mono.just(tickers));
     }
     private static Double d(Object o) {
         if (o == null) return null;
