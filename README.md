@@ -36,10 +36,10 @@ nohup $JAVA_HOME/bin/java -Dserver.port=8080 -jar /service/yfin-java-lite/yfin-j
 ### 설정(application.yml)
 `src/main/resources/application.yml` 기본값을 사용합니다. 운영 환경에서는 민감 정보(예: MongoDB URI, API 키)를 환경변수/외부 설정으로 분리하는 것을 권장합니다.
 
-- **MongoDB**: `spring.data.mongodb.uri`
-- **Redis**: `spring.redis.host`, `spring.redis.port`, `spring.redis.timeout`
-- **캐시 TTL**: `cache.quote-ttl-seconds`, `cache.history-ttl-seconds`, `cache.dividends-ttl-seconds`
-- **폴백 프로바이더(선택)**: 키가 비어 있으면 폴백은 비활성화되며 기본은 Yahoo입니다.
+- MongoDB: `spring.data.mongodb.uri`
+- Redis: `spring.redis.host`, `spring.redis.port`, `spring.redis.timeout`
+- 캐시 TTL: `cache.quote-ttl-seconds`, `cache.history-ttl-seconds`, `cache.dividends-ttl-seconds`
+- 폴백 프로바이더(선택): 키가 비어 있으면 폴백은 비활성화되며 기본은 Yahoo입니다.
   - `alphaVantage.apiKey`: Alpha Vantage 키
   - `finnhub.apiKey`: Finnhub 키
 
@@ -56,27 +56,26 @@ nohup $JAVA_HOME/bin/java -Dserver.port=8080 -jar /service/yfin-java-lite/yfin-j
 - `GET /search/google?q=...&count=10&lang=` 또는 `GET /news/google`(대체 경로): Google News RSS
 - `GET /calendar?ticker=...&exchange=`: 캘린더/이벤트(calendarEvents)
 - `GET /earnings/dates?ticker=...&exchange=`: 실적발표 일정(과거/미래)
- - `GET /stream/quotes?tickers=AA,BB&exchange=&intervalSec=5`: SSE 실시간 시세 스트림(heartbeat 포함)
- - `GET /screener/filter?...`: 시장/배당/변동성/거래량 필터 스크리너
- - `GET /screener/sector/ranking?...`: 섹터/업종 랭킹
- - `GET /indicators/ma?...`: 이동평균(MA) 시계열
- - `GET /indicators/rsi?...`: RSI 시계열
- - `POST /portfolio/summary`: 포트폴리오 손익/배당 요약
- - `GET /corp-actions?ticker=...`: 기업행위 요약(배당락/지급일/최근 배당/스플릿)
+- `GET /stream/quotes?tickers=AA,BB&exchange=&intervalSec=5`: SSE 실시간 시세 스트림(heartbeat 포함)
+- `GET /screener/filter?...`: 시장/배당/변동성/거래량 필터 스크리너
+- `GET /screener/sector/ranking?...`: 섹터/업종 랭킹
+- `GET /indicators/ma?...`: 이동평균(MA) 시계열
+- `GET /indicators/rsi?...`: RSI 시계열
+- `POST /portfolio/summary`: 포트폴리오 손익/배당 요약
+- `GET /corp-actions?ticker=...`: 기업행위 요약(배당락/지급일/스플릿)
 
 참고: 한국 6자리 숫자 티커(예: 005930)는 자동으로 `.KS`/`.KQ` 접미사를 판별합니다. 필요 시 `exchange` 파라미터로 강제 지정 가능합니다.
 
 ### 실시간 WebSocket (KIS 우선)
 - 엔드포인트: `ws://<host>:<port>/ws/quotes?tickers=AAPL,005930&intervalSec=1`
 - 라우팅/동작 순서(우선순위)
-  - KIS 승인키가 유효하면 국내(.KS/.KQ)와 해외(미국 등) 모두 KIS WS로 우선 구독(저지연)
-  - KIS 승인 실패/제한 시 자동으로 Finnhub WS로 폴백
-  - 보강용 스냅샷(REST)은 중복 제거 후 병합됨
+  - KIS 승인키 유효 시 KIS WS로 우선 구독(국내/해외 모두), 실패 시 Finnhub WS 폴백
+  - 보강 스냅샷(REST)은 중복 제거 후 병합됨
     - KIS 경로: 최소 1초(`intervalSec`) 보강
     - 폴백 경로: 최소 10초 보강(차단 리스크 완화)
 - 요청 파라미터
-  - `tickers`: 쉼표 구분 멀티 심볼. 한국 6자리 티커는 자동으로 `.KS/.KQ` 보정
-  - `intervalSec`: 보강 스냅샷 최소 간격(기본 2, KIS 경로는 1초까지 허용)
+  - `tickers`: 쉼표 구분 멀티 심볼. 한국 6자리 티커 자동 `.KS/.KQ` 보정
+  - `intervalSec`: 보강 스냅샷 최소 간격(기본 2, KIS 경로 1초까지 허용)
 - 응답 메시지(서버→클라이언트):
 ```json
 {"symbol":"AAPL","price":230.49,"dp":0.51}
@@ -93,11 +92,20 @@ api:
     appKey: <APP_KEY>
     app-secret: <APP_SECRET>
     access-token-generate-url: https://openapi.koreainvestment.com:9443/oauth2/tokenP
-    approval-url: /oauth2/Approval   # (선택) 기본값 동일
+    approval-url: /oauth2/Approval
 ```
 Redis 저장(요약):
-- REST 토큰: `RestKisToken:<access_token>` 해시(만료 TTL 포함)
+- REST 토큰: `RestKisToken:<access_token>` 해시(만료 TTL 포함) — 신규 발급 시 기존 `RestKisToken:*` 전부 삭제 후 단일 키만 유지
 - WS 승인키: `SocketKisToken:<approval_key>` 해시(기본 TTL 24h)
 
+### 개발 가이드
+- 공통 유틸: `SymbolUtils` — TR ID/키 정규화. `ExchangeSuffix`, `KisTrId` enum 사용
+- Enum: `OptionType`, `ExchangeSuffix`, `ScreenerSortBy`, `KisTrId`
+- Lombok: `@RequiredArgsConstructor`로 생성자 최소화, 필요 시 `@Slf4j` 권장
+- 문서: 상세 API 스키마/예제는 `docs/API.md` 및 Swagger UI 참고
+
 ### 사용 예시
+```bash
+curl 'http://localhost:8080/quote?ticker=AAPL'
+curl 'http://localhost:8080/options?ticker=AAPL'
 ```

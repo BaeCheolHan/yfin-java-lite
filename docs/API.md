@@ -5,7 +5,7 @@
 Swagger UI: http://localhost:8080/swagger-ui.html (모델/스키마와 예제는 Swagger에서 확인 가능)
 
 ### 공통
-- 티커 자동 보정: 한국 6자리 숫자는 `.KS`/`.KQ` 자동 판별. 필요 시 `exchange`로 강제 지정.
+- 티커 자동 보정: 한국 6자리 숫자는 `.KS`/`.KQ` 자동 판별(`ExchangeSuffix` 적용). 필요 시 `exchange`로 강제 지정.
 
 ### 데이터 소스 및 폴백
 - 기본 데이터 소스는 Yahoo Finance입니다.
@@ -112,7 +112,7 @@ curl 'http://localhost:8080/profile?ticker=AAPL'
 
 ### 실시간 WebSocket (KIS 우선)
 - WS `/ws/quotes?tickers=AAPL,005930&intervalSec=1`
-  - KIS 승인키가 유효하면 KIS WS로 우선 구독(국내/해외 모두)
+  - KIS 승인키가 유효하면 KIS WS로 우선 구독(국내/해외 모두). 국내/해외 TR ID는 `KisTrId(H0STCNT0/H0UNCNT0)` 사용.
   - 승인 실패/제한 시 Finnhub WS로 자동 폴백
   - 보강 스냅샷은 중복 제거 후 병합됨(KIS: 1초, 폴백: 10초 최소)
   - 응답(단순화): `{ "symbol": string, "price": number, "dp": number }`
@@ -136,7 +136,7 @@ npx -y wscat -c 'ws://localhost:8080/ws/quotes?tickers=005930,AAPL&intervalSec=1
 - GET `/screener/filter?market=KS&minDividendYield=0.02&minVolatilityPct=0.5&minVolume=100000`
   - 설명: 시장·배당수익률·근사 변동성(%)·최소 거래량 필터
 - GET `/screener/sector/ranking?market=KS&topN=5&sortBy=volume`
-  - 설명: 섹터/업종별 상위 N 종목 랭킹(거래대금/변동률 등 기준)
+  - 설명: 섹터/업종별 상위 N 종목 랭킹(정렬 기준은 `ScreenerSortBy`: `changePercent`/`volume`)
 
 ### 기술적 지표
 - GET `/indicators/ma?ticker=AAPL&range=6mo&interval=1d&autoAdjust=true&window=20`

@@ -71,9 +71,14 @@ public class QuoteWebSocketHandler implements WebSocketHandler {
 
             return wsFlux.distinctUntilChanged(q -> q.getSymbol() + ":" + q.getRegularMarketPrice());
         }
-        // WS 공급자가 없는 경우에는 빈 스트림 반환 (WS 경로에서는 Yahoo 사용 금지)
-        log.warn("No WebSocket provider enabled (KIS/Finnhub). Returning empty stream for WS endpoint.");
-        return Flux.empty();
+        // WS 공급자가 없는 경우: REST 스냅샷 폴링으로 대체하여 연결 유지
+        int sec = Math.max(1, intervalSec);
+        log.warn("No WebSocket provider enabled (KIS/Finnhub). Falling back to snapshot polling every {}s.", sec);
+        return Flux.interval(Duration.ofSeconds(sec))
+                .onBackpressureDrop()
+                .flatMap(t -> quoteService.quotesSnapshotSafe(tickers))
+                .flatMapIterable(list -> list)
+                .distinctUntilChanged(q -> q.getSymbol() + ":" + q.getRegularMarketPrice());
     }
 
     private Map<String, String> parseQuery(String raw) {
