@@ -178,12 +178,22 @@ public class KisAuthClient {
 
     private Mono<String> issueWsApprovalKeyActual() {
         if (!isConfigured()) return Mono.empty();
+        
+        log.info("=== KIS WS Approval Key Request ===");
+        log.info("App Key: {}", appKey);
+        log.info("App Secret: {}", appSecret != null ? "***" + appSecret.substring(Math.max(0, appSecret.length() - 4)) : "null");
+        
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("grant_type", "client_credentials");
         body.put("appkey", appKey);
         // WS 승인키 발급은 secretkey 필드 사용
         body.put("secretkey", appSecret);
+        
         String uri = (wsApprovalUrl == null || wsApprovalUrl.isBlank()) ? "/oauth2/Approval" : wsApprovalUrl;
+        log.info("Request URI: {}", uri);
+        log.info("Request Body: {}", body);
+        log.info("=== End Approval Key Request ===");
+        
         return kisHttp.post()
                 .uri(uri)
                 .contentType(MediaType.APPLICATION_JSON)

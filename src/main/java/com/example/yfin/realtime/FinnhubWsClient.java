@@ -3,6 +3,7 @@ package com.example.yfin.realtime;
 import com.example.yfin.model.QuoteDto;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -46,6 +47,46 @@ public class FinnhubWsClient {
 
     public boolean isEnabled() {
         return !apiKey.isBlank();
+    }
+    
+    /**
+     * 애플리케이션 종료 시 Graceful Shutdown
+     */
+    @PreDestroy
+    public void gracefulShutdown() {
+        log.info("=== Finnhub WebSocket Graceful Shutdown Started ===");
+        gracefulDisconnect();
+        log.info("=== Finnhub WebSocket Graceful Shutdown Completed ===");
+    }
+    
+    /**
+     * Graceful Disconnect - 모든 구독 해제 후 연결 종료
+     */
+    public void gracefulDisconnect() {
+        log.info("Finnhub WebSocket graceful disconnecting...");
+        running.set(false);
+        
+        // 모든 구독 해제 요청 전송
+        if (connected && !subCount.isEmpty()) {
+            log.info("Sending graceful unsubscribe requests to Finnhub server...");
+            for (String symbol : subCount.keySet()) {
+                log.info("Sending unsubscribe request for symbol: {}", symbol);
+                outbound.tryEmitNext("{\"type\":\"unsubscribe\",\"symbol\":\"" + symbol + "\"}");
+            }
+            
+            // 해제 요청 전송 후 잠시 대기
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        
+        // 연결 상태 정리
+        connected = false;
+        symbolSinks.clear();
+        subCount.clear();
+        outbound.tryEmitComplete();
     }
 
     public Flux<QuoteDto> subscribe(String symbol) {

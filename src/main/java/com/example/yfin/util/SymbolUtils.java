@@ -10,18 +10,18 @@ public final class SymbolUtils {
     /**
      * 심볼에 기반해 KIS WS TR ID를 결정합니다.
      * - 접미사 KS/KQ 또는 숫자-only이면 국내 체결가(H0STCNT0)
-     * - 그 외는 해외 체결(H0UNCNT0)
+     * - 그 외는 해외 체결가(HDFSCNT0)
      */
     public static KisTrId determineTransactionId(String symbol) {
         if (symbol != null) {
             int dot = symbol.indexOf('.');
             String suffix = dot > 0 && dot + 1 < symbol.length() ? symbol.substring(dot + 1).toUpperCase() : "";
             ExchangeSuffix ex = ExchangeSuffix.from(suffix);
-            if (ex.isKorea()) return KisTrId.H0STCNT0;
+            if (ex.isKorea()) return KisTrId.H0STCNT0;  // 국내 주식 실시간 체결가
             String left = dot > 0 ? symbol.substring(0, dot) : symbol;
-            if (left.matches("\\d+")) return KisTrId.H0STCNT0;
+            if (left.matches("\\d+")) return KisTrId.H0STCNT0;  // 숫자만 있으면 국내
         }
-        return KisTrId.H0UNCNT0;
+        return KisTrId.HDFSCNT0;  // 해외 주식 실시간 체결가
     }
 
     /**
