@@ -160,7 +160,7 @@ public class QuoteWebSocketHandler implements WebSocketHandler {
             String raw = t;
             monos.add(
                     resolver.normalize(raw)
-                            .timeout(Duration.ofSeconds(2))
+                            .timeout(Duration.ofSeconds(5))
                             .onErrorResume(e -> {
                                 log.warn("normalize timeout/failure for {} -> fallback raw: {}", raw, e.toString());
                                 return Mono.just(raw);
@@ -171,7 +171,7 @@ public class QuoteWebSocketHandler implements WebSocketHandler {
             List<String> out = new ArrayList<>(arr.length);
             for (Object o : arr) out.add(String.valueOf(o));
             return out;
-        }).timeout(Duration.ofSeconds(5))
+        }).timeout(Duration.ofSeconds(10))
                 .onErrorResume(e -> {
                     log.warn("normalize all timeout/failure -> using raw list: {}", e.toString());
                     return Mono.just(tickers);
@@ -186,7 +186,7 @@ public class QuoteWebSocketHandler implements WebSocketHandler {
             String raw = t;
             monos.add(
                     resolver.normalize(raw, exchange)
-                            .timeout(Duration.ofSeconds(2))
+                            .timeout(Duration.ofSeconds(5))
                             .onErrorResume(e -> Mono.just(raw))
             );
         }
@@ -194,7 +194,7 @@ public class QuoteWebSocketHandler implements WebSocketHandler {
             List<String> out = new ArrayList<>(arr.length);
             for (Object o : arr) out.add(String.valueOf(o));
             return out;
-        }).timeout(Duration.ofSeconds(5))
+        }).timeout(Duration.ofSeconds(10))
                 .onErrorResume(e -> Mono.just(tickers));
     }
 }

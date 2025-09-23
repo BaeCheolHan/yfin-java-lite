@@ -136,8 +136,9 @@ public class KisAuthClient {
                 .bodyValue(body)
                 .retrieve()
                 .bodyToMono(KisToken.class)
-                .timeout(Duration.ofSeconds(8))
-                .doOnError(e -> log.warn("KIS token issue failed: {}", e.toString()));
+                .timeout(Duration.ofSeconds(15))
+                .doOnError(e -> log.warn("KIS token issue failed: {}", e.toString()))
+                .onErrorResume(e -> Mono.empty());
     }
 
     private static final class TokenHolder {
@@ -179,10 +180,6 @@ public class KisAuthClient {
     private Mono<String> issueWsApprovalKeyActual() {
         if (!isConfigured()) return Mono.empty();
         
-        log.info("=== KIS WS Approval Key Request ===");
-        log.info("App Key: {}", appKey);
-        log.info("App Secret: {}", appSecret != null ? "***" + appSecret.substring(Math.max(0, appSecret.length() - 4)) : "null");
-        
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("grant_type", "client_credentials");
         body.put("appkey", appKey);
@@ -190,10 +187,7 @@ public class KisAuthClient {
         body.put("secretkey", appSecret);
         
         String uri = (wsApprovalUrl == null || wsApprovalUrl.isBlank()) ? "/oauth2/Approval" : wsApprovalUrl;
-        log.info("Request URI: {}", uri);
-        log.info("Request Body: {}", body);
-        log.info("=== End Approval Key Request ===");
-        
+
         return kisHttp.post()
                 .uri(uri)
                 .contentType(MediaType.APPLICATION_JSON)
@@ -202,9 +196,10 @@ public class KisAuthClient {
                 .retrieve()
                 .bodyToMono(KisSocketToken.class)
                 .map(KisSocketToken::getApproval_key)
-                .timeout(Duration.ofSeconds(8))
+                .timeout(Duration.ofSeconds(15))
                 .doOnError(e -> log.warn("KIS WS approval key issue failed: {}", e.toString()))
-                .flatMap(key -> storeWsApprovalKey(key).onErrorResume(err -> Mono.just(Boolean.FALSE)).thenReturn(key));
+                .flatMap(key -> storeWsApprovalKey(key).onErrorResume(err -> Mono.just(Boolean.FALSE)).thenReturn(key))
+                .onErrorResume(e -> Mono.empty());
     }
 
     private Mono<Boolean> storeWsApprovalKey(String key) {

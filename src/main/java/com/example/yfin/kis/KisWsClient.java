@@ -72,6 +72,9 @@ public class KisWsClient {
         this.wsUrl = wsUrl;
         this.wsEnabled = wsEnabled;
         this.objectMapper = new ObjectMapper().setSerializationInclusion(JsonInclude.Include.NON_NULL);
+        
+        log.info("KisWsClient initialized with wsUrl: {}", wsUrl);
+        log.info("KisWsClient wsEnabled: {}", wsEnabled);
     }
 
     public boolean isEnabled() { return wsEnabled && auth != null && auth.isConfigured(); }
@@ -85,14 +88,16 @@ public class KisWsClient {
         // 심볼 구독 ref-count 증가
         int newCount = subscriptionRefCount.merge(symbol, 1, Integer::sum);
 
-        // 새로운 종목 추가 시 재연결 필요 여부 확인
+        // 새로운 종목 추가 시에만 KIS 서버에 구독 요청
         if (newCount == 1) {
             if (subscriptionRefCount.size() > maxSymbolsPerSession.get()) {
                 log.warn("KIS symbol limit exceeded ({}), forcing reconnection", subscriptionRefCount.size());
                 needsReconnection.set(true);
                 disconnect();
+            } else {
+                // 첫 번째 구독자일 때만 KIS 서버에 구독 요청
+                outbound.tryEmitNext(symbol);
             }
-            outbound.tryEmitNext(symbol);
         }
 
         // 심볼별 팬아웃 싱크
@@ -100,11 +105,16 @@ public class KisWsClient {
         return sink.asFlux()
                 .doFinally(sig -> {
                     // 구독 해지 감지 시 ref-count 감소
-                    subscriptionRefCount.compute(symbol, (k, v) -> {
+                    Integer remainingCount = subscriptionRefCount.compute(symbol, (k, v) -> {
                         int n = (v == null ? 0 : v) - 1;
                         if (n <= 0) return null;
                         return n;
                     });
+                    
+                    // 마지막 구독자일 때 KIS 서버에 구독 해제 요청
+                    if (remainingCount == null) {
+                        unsubscribe(symbol);
+                    }
                 });
     }
     
@@ -329,44 +339,62 @@ public class KisWsClient {
     }
 
     private Mono<Void> tryConnectWithCandidates(String approval) {
-        // 테스트 Domain 우선, 실전/모의 순으로 후보 URL 순차 시도
+        // 실전 환경 최우선, 모의 환경, 테스트 환경 순으로 연결 시도
         java.util.List<String> candidates = java.util.List.of(
-                "ws://ops.koreainvestment.com:21000",                    // 테스트 환경 (최우선)
+                "wss://openapi.koreainvestment.com:9443/websocket",      // 실전 환경 (최우선)
+                "wss://openapi.koreainvestment.com:9443/ws",             // 실전 환경 대체 엔드포인트
+                "wss://openapivts.koreainvestment.com:29443/websocket",   // 모의 환경
+                "wss://openapivts.koreainvestment.com:29443/ws",         // 모의 환경 대체 엔드포인트
+                wsUrl,  // 설정된 기본 URL
+                "ws://ops.koreainvestment.com:21000",                    // 테스트 환경
                 "ws://ops.koreainvestment.com:21000/tryitout/H0STCNT0",  // 국내 주식 체결가 테스트
                 "ws://ops.koreainvestment.com:21000/tryitout/H0GSCNI0",  // 국내 주식 시세 테스트
                 "ws://ops.koreainvestment.com:21000/tryitout/HDFSCNT0",  // 해외 주식 체결가 테스트
-                "ws://ops.koreainvestment.com:21000/tryitout/HDFSASP0",  // 해외 주식 시세 테스트
-                wsUrl,  // 설정된 기본 URL
-                "wss://openapi.koreainvestment.com:9443/websocket",      // 실전 환경
-                "wss://openapivts.koreainvestment.com:29443/websocket"   // 모의 환경
+                "ws://ops.koreainvestment.com:21000/tryitout/HDFSASP0"   // 해외 주식 시세 테스트
         );
         Mono<Void> chain = Mono.error(new IllegalStateException("no candidates"));
         for (String url : candidates) {
-            chain = chain.onErrorResume(ex -> connectTo(url, approval));
+            chain = chain.onErrorResume(ex -> {
+                log.info("Trying KIS WebSocket connection to: {}", url);
+                return connectTo(url, approval)
+                        .doOnError(error -> {
+                            if (url.contains("openapi.koreainvestment.com")) {
+                                log.warn("실전 도메인 연결 실패: {} - {}", url, error.getMessage());
+                            } else if (url.contains("openapivts.koreainvestment.com")) {
+                                log.warn("모의 도메인 연결 실패: {} - {}", url, error.getMessage());
+                            } else {
+                                log.warn("테스트 도메인 연결 실패: {} - {}", url, error.getMessage());
+                            }
+                        });
+            });
         }
-        return chain.doOnError(e -> log.warn("KIS WS connection error: {}", e.toString()));
+        return chain.doOnError(e -> log.warn("All KIS WebSocket connection attempts failed: {}", e.toString()));
     }
 
     private Mono<Void> connectTo(String url, String approval) {
-        if (url.contains("openapi.koreainvestment.com:9443")) {
-            log.info("Attempting KIS WebSocket connection to 실전 Domain: {}", url);
-        } else if (url.contains("openapivts.koreainvestment.com:29443")) {
-            log.info("Attempting KIS WebSocket connection to 모의 Domain: {}", url);
-        } else {
-            log.info("Attempting KIS WebSocket connection to 테스트 Domain: {}", url);
-        }
-        // 1) WS 핸드셰이크 헤더 구성 (KIS 요구 헤더)
+        // 도메인별 연결 로그 및 헤더 설정
         HttpHeaders headers;
         if (url.contains("openapi.koreainvestment.com:9443")) {
-            // 실전 환경에서는 다른 헤더 사용
+            log.info("Attempting KIS WebSocket connection to 실전 Domain: {}", url);
             headers = buildHandshakeHeadersForProduction(approval);
+        } else if (url.contains("openapivts.koreainvestment.com:29443")) {
+            log.info("Attempting KIS WebSocket connection to 모의 Domain: {}", url);
+            headers = buildHandshakeHeaders(approval);
         } else {
-            // 테스트/모의 환경에서는 기본 헤더 사용
+            log.info("Attempting KIS WebSocket connection to 테스트 Domain: {}", url);
             headers = buildHandshakeHeaders(approval);
         }
         
-        // 연결 시도
-        log.info("Attempting KIS WebSocket connection to: {}", url);
+        // 핸드셰이크 헤더 상세 로그
+        log.info("=== KIS WebSocket Handshake Headers for {} ===", url);
+        headers.forEach((key, values) -> {
+            if (key.equals("approval_key")) {
+                log.info("{}: {}", key, values.get(0));
+            } else {
+                log.info("{}: {}", key, values);
+            }
+        });
+        log.info("=== End Handshake Headers ===");
         
         return wsClient.execute(URI.create(url), headers, session -> {
                 log.info("KIS WebSocket connected successfully to: {}", url);
@@ -502,6 +530,15 @@ public class KisWsClient {
                         currentSession = null;
                         currentApprovalKey = null;
                     });
+        })
+        .doOnError(error -> {
+            log.error("=== KIS WebSocket Handshake Error for {} ===", url);
+            log.error("Error Type: {}", error.getClass().getSimpleName());
+            log.error("Error Message: {}", error.getMessage());
+            if (error.getCause() != null) {
+                log.error("Cause: {}", error.getCause().getMessage());
+            }
+            log.error("=== End Handshake Error ===");
         });
     }
 
@@ -539,8 +576,9 @@ public class KisWsClient {
     private HttpHeaders buildHandshakeHeadersForProduction(String approval) {
         HttpHeaders headers = new HttpHeaders();
         headers.add("Origin", "https://openapi.koreainvestment.com");
-        // 실전 환경에서는 WebSocket 프로토콜 제거
-        // headers.add("Sec-WebSocket-Protocol", "websocket");
+        headers.add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36");
+        // 실전 도메인에서도 인증 헤더가 필요함
+        headers.add("Sec-WebSocket-Protocol", "json");
         headers.add("appkey", auth.appKey());
         headers.add("approval_key", approval);
         headers.add("custtype", "P");
