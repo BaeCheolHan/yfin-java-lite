@@ -22,6 +22,8 @@ import com.example.yfin.util.SymbolUtils;
 
 import java.net.URI;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -170,16 +172,19 @@ public class KisWsClient {
      * Graceful Disconnect - 해제 요청 전송 후 연결 종료
      */
     public void gracefulDisconnect() {
+        log.info("=== KIS WebSocket Graceful Disconnect Started ===");
         running.set(false);
         
         // 서버에 해제 요청 전송
-        if (currentSession != null) {
+        if (currentSession != null && !subscriptionRefCount.isEmpty()) {
             try {
+                log.info("Sending unsubscribe requests for {} symbols", subscriptionRefCount.size());
                 sendUnsubscribeRequests();
                 
-                // 해제 요청 전송 후 대기 후 세션 종료
-                Mono.delay(Duration.ofMillis(2000))
+                // 해제 요청 전송 후 충분한 대기 시간 (10초)
+                Mono.delay(Duration.ofMillis(10000))
                     .doOnSuccess(v -> {
+                        log.info("Unsubscribe requests completed, closing session");
                         if (currentSession != null) {
                             try {
                                 currentSession.close();
@@ -187,9 +192,11 @@ public class KisWsClient {
                                 log.warn("Error closing KIS WebSocket session: {}", e.getMessage());
                             }
                             currentSession = null;
+                            currentApprovalKey = null;
                         }
                     })
-                    .block();
+                    .doOnError(e -> log.warn("Graceful shutdown delay error: {}", e.getMessage()))
+                    .subscribe();
             } catch (Exception e) {
                 log.warn("Error sending graceful unsubscribe requests: {}", e.getMessage());
                 if (currentSession != null) {
@@ -199,21 +206,22 @@ public class KisWsClient {
                         log.warn("Error closing session after graceful unsubscribe error: {}", ex.getMessage());
                     }
                     currentSession = null;
+                    currentApprovalKey = null;
                 }
             }
         } else {
+            log.info("No active session or subscriptions to unsubscribe");
             currentSession = null;
+            currentApprovalKey = null;
         }
         
         // 연결 정리
         symbolSinks.clear();
+        subscriptionRefCount.clear();
         outbound.tryEmitComplete();
         outbound = Sinks.many().replay().limit(256);
         
-        // 기존 구독 요청들을 다시 큐에 추가
-        for (String symbol : subscriptionRefCount.keySet()) {
-            outbound.tryEmitNext(symbol);
-        }
+        log.info("=== KIS WebSocket Graceful Disconnect Completed ===");
     }
 
     public void disconnect() {
@@ -280,37 +288,39 @@ public class KisWsClient {
             return;
         }
         
-        Mono.just(approvalKey)
-            .doOnNext(key -> {
-                
-                // 세션 재확인 (해제 요청 전송 시점에 세션이 유효한지)
-                if (currentSession == null) {
-                    log.warn("Session became null during unsubscribe request preparation");
-                    return;
+        log.info("Preparing unsubscribe requests for {} symbols", subscriptionRefCount.size());
+        
+        // 해제 요청을 순차적으로 전송하여 확실하게 처리
+        List<String> symbols = new ArrayList<>(subscriptionRefCount.keySet());
+        
+        Flux.fromIterable(symbols)
+            .flatMap(symbol -> {
+                try {
+                    KisTrId trEnum = SymbolUtils.determineTransactionId(symbol);
+                    String trId = trEnum.name();
+                    String trKey = SymbolUtils.determineTransactionKey(symbol);
+                    
+                    // 해제 요청 생성 (tr_type = 2)
+                    KisWebSocketRequest unsubscribeRequest = new KisWebSocketRequest(approvalKey, trId, trKey, true);
+                    String unsubscribeJson = objectMapper.writeValueAsString(unsubscribeRequest);
+                    
+                    log.info("Sending unsubscribe request for symbol: {} (tr_id: {}, tr_key: {})", symbol, trId, trKey);
+                    log.info("Unsubscribe JSON: {}", unsubscribeJson);
+                    
+                    // 해제 요청 전송
+                    return currentSession.send(Mono.just(currentSession.textMessage(unsubscribeJson)))
+                            .doOnSuccess(v -> log.info("Unsubscribe request sent successfully for symbol: {}", symbol))
+                            .doOnError(e -> log.error("Error sending unsubscribe request for symbol {}: {}", symbol, e.getMessage()))
+                            .then(Mono.delay(Duration.ofMillis(100))); // 각 요청 간 100ms 대기
+                    
+                } catch (Exception e) {
+                    log.error("Error preparing unsubscribe request for symbol {}: {}", symbol, e.getMessage());
+                    return Mono.empty();
                 }
-                
-                            // 모든 구독된 심볼에 대해 해제 요청 전송
-                            for (String symbol : subscriptionRefCount.keySet()) {
-                                try {
-                                    KisTrId trEnum = SymbolUtils.determineTransactionId(symbol);
-                                    String trId = trEnum.name();
-                                    String trKey = SymbolUtils.determineTransactionKey(symbol);
-                                    
-                                    // 해제 요청 생성 (tr_type = 2)
-                                    KisWebSocketRequest unsubscribeRequest = new KisWebSocketRequest(key, trId, trKey, true);
-                                    String unsubscribeJson = objectMapper.writeValueAsString(unsubscribeRequest);
-                                    
-                                    // 해제 요청 전송
-                                    currentSession.send(Mono.just(currentSession.textMessage(unsubscribeJson)))
-                                            .doOnError(e -> log.error("Error sending unsubscribe request for symbol {}: {}", symbol, e.getMessage()))
-                                            .subscribe();
-                                    
-                                } catch (Exception e) {
-                                    log.error("Error preparing unsubscribe request for symbol {}: {}", symbol, e.getMessage());
-                                }
-                            }
             })
-            .doOnError(e -> log.error("Error getting approval key for unsubscribe: {}", e.getMessage()))
+            .then()
+            .doOnSuccess(v -> log.info("All unsubscribe requests completed"))
+            .doOnError(e -> log.error("Error in unsubscribe process: {}", e.getMessage()))
             .subscribe(); // Non-blocking 구독
     }
 
@@ -339,18 +349,12 @@ public class KisWsClient {
     }
 
     private Mono<Void> tryConnectWithCandidates(String approval) {
-        // 실전 환경 최우선, 모의 환경, 테스트 환경 순으로 연결 시도
         java.util.List<String> candidates = java.util.List.of(
-                "wss://openapi.koreainvestment.com:9443/websocket",      // 실전 환경 (최우선)
-                "wss://openapi.koreainvestment.com:9443/ws",             // 실전 환경 대체 엔드포인트
-                "wss://openapivts.koreainvestment.com:29443/websocket",   // 모의 환경
-                "wss://openapivts.koreainvestment.com:29443/ws",         // 모의 환경 대체 엔드포인트
                 wsUrl,  // 설정된 기본 URL
-                "ws://ops.koreainvestment.com:21000",                    // 테스트 환경
-                "ws://ops.koreainvestment.com:21000/tryitout/H0STCNT0",  // 국내 주식 체결가 테스트
-                "ws://ops.koreainvestment.com:21000/tryitout/H0GSCNI0",  // 국내 주식 시세 테스트
-                "ws://ops.koreainvestment.com:21000/tryitout/HDFSCNT0",  // 해외 주식 체결가 테스트
-                "ws://ops.koreainvestment.com:21000/tryitout/HDFSASP0"   // 해외 주식 시세 테스트
+                "ws://ops.koreainvestment.com:21000/tryitout/H0STCNT0",  // 국내 주식 체결가
+                "ws://ops.koreainvestment.com:21000/tryitout/H0GSCNI0",  // 국내 주식 시세
+                "ws://ops.koreainvestment.com:21000/tryitout/HDFSCNT0",  // 해외 주식 체결가
+                "ws://ops.koreainvestment.com:21000/tryitout/HDFSASP0"   // 해외 주식 시세
         );
         Mono<Void> chain = Mono.error(new IllegalStateException("no candidates"));
         for (String url : candidates) {
@@ -358,13 +362,7 @@ public class KisWsClient {
                 log.info("Trying KIS WebSocket connection to: {}", url);
                 return connectTo(url, approval)
                         .doOnError(error -> {
-                            if (url.contains("openapi.koreainvestment.com")) {
-                                log.warn("실전 도메인 연결 실패: {} - {}", url, error.getMessage());
-                            } else if (url.contains("openapivts.koreainvestment.com")) {
-                                log.warn("모의 도메인 연결 실패: {} - {}", url, error.getMessage());
-                            } else {
-                                log.warn("테스트 도메인 연결 실패: {} - {}", url, error.getMessage());
-                            }
+                            log.warn("웹소켓 도메인 연결 실패: {} - {}", url, error.getMessage());
                         });
             });
         }
@@ -541,6 +539,8 @@ public class KisWsClient {
             log.error("=== End Handshake Error ===");
         });
     }
+
+
 
     /**
      * 간단 심볼 → TR 매핑

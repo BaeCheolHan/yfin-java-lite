@@ -1,6 +1,7 @@
 package com.example.yfin.kis;
 
 import com.example.yfin.model.QuoteDto;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -151,5 +152,29 @@ public class KisWebSocketManager {
      */
     public int getTotalSymbols() {
         return totalSymbols.get();
+    }
+    
+    /**
+     * Graceful Shutdown - 모든 클라이언트 구독 해제
+     */
+    @PreDestroy
+    public void gracefulShutdown() {
+        log.info("=== KisWebSocketManager Graceful Shutdown Started ===");
+        
+        // 모든 클라이언트 세션의 구독 해제
+        for (String sessionId : clientSubscriptions.keySet()) {
+            log.info("Unsubscribing all symbols for session: {}", sessionId);
+            unsubscribeAll(sessionId);
+        }
+        
+        // 모든 심볼 싱크 완료
+        symbolSinks.values().forEach(sink -> sink.tryEmitComplete());
+        
+        // 상태 초기화
+        clientSubscriptions.clear();
+        symbolSinks.clear();
+        totalSymbols.set(0);
+        
+        log.info("=== KisWebSocketManager Graceful Shutdown Completed ===");
     }
 }

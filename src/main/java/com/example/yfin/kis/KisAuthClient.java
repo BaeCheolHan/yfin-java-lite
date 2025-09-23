@@ -155,26 +155,24 @@ public class KisAuthClient {
         return wsApprovalKey();
     }
 
-    /** 웹소켓 Approval Key 조회(레디스 우선, 만료 임박 시 재발급) */
+    /** 웹소켓 Approval Key 조회(매번 새로 발급하여 구독 충돌 방지) */
     public Mono<String> wsApprovalKey() {
         if (!isConfigured()) return Mono.empty();
-        // SocketKisToken:* 해시에서 첫 키를 조회
+
+        // 기존 승인키 완전 정리 후 새로 발급 (구독 충돌 방지)
         return redis.keys("SocketKisToken:*")
-                .next()
-                .flatMap(key -> redis.opsForHash().get(key, "approval_key")
-                        .map(Object::toString)
-                        .zipWith(redis.getExpire(key).defaultIfEmpty(Duration.ZERO))
-                )
-                .flatMap(t -> {
-                    String existing = t.getT1();
-                    Duration ttl = t.getT2();
-                    if (existing != null && !existing.isBlank() && ttl != null && ttl.getSeconds() > 60) {
-                        return Mono.just(existing);
-                    }
-                    return issueWsApprovalKeyActual();
+                .flatMap(key -> {
+                    log.info("Deleting existing approval key: {}", key);
+                    return redis.delete(key);
                 })
-                .switchIfEmpty(issueWsApprovalKeyActual())
-                .onErrorResume(e -> issueWsApprovalKeyActual());
+                .then(Mono.delay(Duration.ofMillis(2000))) // 2초 대기 (KIS 서버 정리 시간)
+                .then(issueWsApprovalKeyActual())
+                .doOnNext(key -> log.info("New approval key issued: {}", key))
+                .onErrorResume(e -> {
+                    log.warn("Failed to issue approval key, retrying: {}", e.getMessage());
+                    return Mono.delay(Duration.ofMillis(1000))
+                            .then(issueWsApprovalKeyActual());
+                });
     }
 
     private Mono<String> issueWsApprovalKeyActual() {
