@@ -103,19 +103,32 @@ public class KisWsClient {
         }
 
         // 심볼별 팬아웃 싱크
-        Sinks.Many<QuoteDto> sink = symbolSinks.computeIfAbsent(symbol, k -> Sinks.many().multicast().onBackpressureBuffer());
+        Sinks.Many<QuoteDto> sink = symbolSinks.computeIfAbsent(symbol, k -> {
+            Sinks.Many<QuoteDto> newSink = Sinks.many().multicast().onBackpressureBuffer();
+            log.info("Created new sink for symbol: {} (ref-count: {})", symbol, newCount);
+            return newSink;
+        });
+        
+        log.info("Client subscribing to symbol: {} (ref-count: {})", symbol, newCount);
+        
         return sink.asFlux()
+                .doOnSubscribe(s -> log.info("Client subscribed to symbol: {} (ref-count: {})", symbol, newCount))
                 .doFinally(sig -> {
+                    log.info("Client unsubscribing from symbol: {} (signal: {})", symbol, sig);
+                    
                     // 구독 해지 감지 시 ref-count 감소
                     Integer remainingCount = subscriptionRefCount.compute(symbol, (k, v) -> {
                         int n = (v == null ? 0 : v) - 1;
                         if (n <= 0) return null;
                         return n;
                     });
-                    
+
                     // 마지막 구독자일 때 KIS 서버에 구독 해제 요청
                     if (remainingCount == null) {
+                        log.info("Last client unsubscribed from symbol: {}, sending unsubscribe request", symbol);
                         unsubscribe(symbol);
+                    } else {
+                        log.info("Symbol {} still has {} subscribers", symbol, remainingCount);
                     }
                 });
     }
@@ -500,6 +513,7 @@ public class KisWsClient {
                                         try { rate = Double.parseDouble(ratePctStr) / 100.0; } catch (Exception ignore3) {}
                                         
                                         Set<String> originals = transactionKeyToOriginalSymbols.getOrDefault(trKey, java.util.Collections.emptySet());
+                                        log.debug("KIS data received for trKey: {}, originals: {}", trKey, originals);
                                         for (String original : originals) {
                                             Sinks.Many<QuoteDto> sink = symbolSinks.get(original);
                                             if (sink != null) {
@@ -508,7 +522,11 @@ public class KisWsClient {
                                                 dto.setRegularMarketPrice(price);
                                                 if (change != null) dto.setRegularMarketChange(change);
                                                 if (rate != null) dto.setRegularMarketChangePercent(rate);
+                                                
+                                                log.debug("Emitting data to sink for symbol: {} (price: {})", original, price);
                                                 sink.tryEmitNext(dto);
+                                            } else {
+                                                log.warn("No sink found for symbol: {}", original);
                                             }
                                         }
                                     } catch (NumberFormatException e) { 

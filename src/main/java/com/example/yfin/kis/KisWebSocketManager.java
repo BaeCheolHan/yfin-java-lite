@@ -54,24 +54,40 @@ public class KisWebSocketManager {
         boolean isNewSymbol = newCount == 1;
         if (isNewSymbol) {
             int totalCount = totalSymbols.incrementAndGet();
+            log.info("New symbol {} added, total symbols: {}", symbol, totalCount);
             
             // 종목별 싱크 생성
-            Sinks.Many<QuoteDto> sink = symbolSinks.computeIfAbsent(symbol, k -> Sinks.many().multicast().onBackpressureBuffer());
+            Sinks.Many<QuoteDto> sink = symbolSinks.computeIfAbsent(symbol, k -> {
+                Sinks.Many<QuoteDto> newSink = Sinks.many().multicast().onBackpressureBuffer();
+                log.info("Created new sink for symbol: {}", symbol);
+                return newSink;
+            });
             
             // KIS WebSocket에 종목 추가 및 데이터 연결
             kisWsClient.subscribe(symbol)
-                    .doOnNext(quote -> sink.tryEmitNext(quote))
+                    .doOnNext(quote -> {
+                        log.debug("Received KIS data for {}: {}", symbol, quote.getRegularMarketPrice());
+                        sink.tryEmitNext(quote);
+                    })
                     .doOnError(e -> log.error("Error in KIS data stream for {}: {}", symbol, e.getMessage()))
                     .subscribe();
+        } else {
+            log.info("Symbol {} already subscribed, client {} joining existing stream", symbol, clientId);
         }
         
         // 클라이언트에게 데이터 스트림 반환
         Sinks.Many<QuoteDto> sink = symbolSinks.get(symbol);
         if (sink != null) {
+            log.info("Returning data stream for symbol {} to client {}", symbol, clientId);
             return sink.asFlux()
-                    .doOnCancel(() -> unsubscribe(clientId, symbol));
+                    .doOnSubscribe(s -> log.info("Client {} subscribed to symbol {}", clientId, symbol))
+                    .doOnCancel(() -> {
+                        log.info("Client {} cancelled subscription to symbol {}", clientId, symbol);
+                        unsubscribe(clientId, symbol);
+                    });
         }
         
+        log.warn("No sink found for symbol {}, returning empty stream", symbol);
         return Flux.empty();
     }
     
