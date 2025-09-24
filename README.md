@@ -1,6 +1,6 @@
 ### yfin-java-lite
 
-Yahoo Finance 기반 시세/차트/배당/옵션/재무/검색 API를 제공하는 Spring Boot 3(WebFlux) 경량 서버입니다. 반응형(reactive) 클라이언트(WebClient)와 캐시(Caffeine/Redis), MongoDB(reactive)를 사용합니다.
+Yahoo Finance 기반 시세/차트/배당/옵션/재무/검색 API를 제공하는 Spring Boot 3(WebFlux) 경량 서버입니다. 반응형(reactive) 클라이언트(WebClient)와 캐시(Caffeine/Redis), MongoDB(reactive)를 사용하며, KIS(한국투자증권) WebSocket을 통한 실시간 데이터 스트리밍을 지원합니다.
 
 ### 주요 기능
 - **시세**: 단일/다중 종목 현재가, 변동, 거래 정보 조회
@@ -9,11 +9,14 @@ Yahoo Finance 기반 시세/차트/배당/옵션/재무/검색 API를 제공하�
 - **옵션**: 최근/지정 만기 옵션 체인
 - **재무/실적/프로필**: 요약 재무제표, 실적/가이던스, 기업 개요/ESG
 - **검색**: 티커/뉴스 검색, Google News RSS 대체 엔드포인트 제공
+- **실시간 WebSocket**: KIS WebSocket을 통한 실시간 주식 데이터 스트리밍
+- **멀티 클라이언트 지원**: 여러 클라이언트가 동일한 심볼을 구독할 수 있는 팬아웃 구조
 
 ### 요구 사항
 - Java 17+
 - Gradle Wrapper 포함
-- (선택) Redis, MongoDB
+- Redis (KIS WebSocket 토큰 관리용)
+- MongoDB (선택사항)
 
 ### 빌드
 ```bash
@@ -68,19 +71,22 @@ nohup $JAVA_HOME/bin/java -Dserver.port=8080 -jar /service/yfin-java-lite/yfin-j
 
 ### 실시간 WebSocket (KIS 우선)
 - 엔드포인트: `ws://<host>:<port>/ws/quotes?tickers=AAPL,005930&intervalSec=1`
-- 라우팅/동작 순서(우선순위)
+- **아키텍처**: 단일 KIS WebSocket 연결을 통한 멀티 클라이언트 팬아웃 구조
+- **라우팅/동작 순서(우선순위)**
   - KIS 승인키 유효 시 KIS WS로 우선 구독(국내/해외 모두), 실패 시 Finnhub WS 폴백
   - 보강 스냅샷(REST)은 중복 제거 후 병합됨
     - KIS 경로: 최소 1초(`intervalSec`) 보강
     - 폴백 경로: 최소 10초 보강(차단 리스크 완화)
-- 요청 파라미터
+- **요청 파라미터**
   - `tickers`: 쉼표 구분 멀티 심볼. 한국 6자리 티커 자동 `.KS/.KQ` 보정
   - `intervalSec`: 보강 스냅샷 최소 간격(기본 2, KIS 경로 1초까지 허용)
-- 응답 메시지(서버→클라이언트):
+- **응답 메시지(서버→클라이언트)**:
 ```json
 {"symbol":"AAPL","price":230.49,"dp":0.51}
 ```
-- 빠른 테스트:
+- **멀티 클라이언트 지원**: 여러 클라이언트가 동일한 심볼을 구독할 때 모든 클라이언트가 동일한 데이터를 받음
+- **Graceful Shutdown**: 애플리케이션 종료 시 KIS 서버에 구독 해제 요청(`tr_type=2`) 전송
+- **빠른 테스트**:
 ```bash
 npx -y wscat -c 'ws://localhost:8080/ws/quotes?tickers=005930,AAPL&intervalSec=1'
 ```
@@ -92,20 +98,86 @@ api:
     appKey: <APP_KEY>
     app-secret: <APP_SECRET>
     access-token-generate-url: https://openapi.koreainvestment.com:9443/oauth2/tokenP
+    user-id: <USER_ID>
+    pw: <PASSWORD>
+    ws-url: wss://openapi.koreainvestment.com:9443/websocket  # 실전 도메인
     approval-url: /oauth2/Approval
+    ws-enabled: true  # KIS WebSocket 활성화/비활성화 플래그
 ```
-Redis 저장(요약):
-- REST 토큰: `RestKisToken:<access_token>` 해시(만료 TTL 포함) — 신규 발급 시 기존 `RestKisToken:*` 전부 삭제 후 단일 키만 유지
-- WS 승인키: `SocketKisToken:<approval_key>` 해시(기본 TTL 24h)
+
+#### Redis 저장(요약)
+- **REST 토큰**: `RestKisToken:<access_token>` 해시(만료 TTL 포함) — 신규 발급 시 기존 `RestKisToken:*` 전부 삭제 후 단일 키만 유지
+- **WS 승인키**: `SocketKisToken:<approval_key>` 해시(기본 TTL 24h) — 애플리케이션 시작 시 기존 승인키 삭제 후 새로 발급
+
+#### KIS WebSocket 아키텍처
+- **단일 연결**: 하나의 app_key에 하나의 WebSocket 연결만 허용
+- **멀티 클라이언트 팬아웃**: 여러 클라이언트가 동일한 심볼을 구독할 때 모든 클라이언트가 동일한 데이터를 받음
+- **참조 카운팅**: 각 심볼별로 구독자 수를 추적하여 마지막 구독자가 해제될 때만 KIS 서버에 구독 해제 요청 전송
+- **Graceful Shutdown**: 애플리케이션 종료 시 모든 구독된 심볼에 대해 순차적으로 구독 해제 요청(`tr_type=2`) 전송
 
 ### 개발 가이드
-- 공통 유틸: `SymbolUtils` — TR ID/키 정규화. `ExchangeSuffix`, `KisTrId` enum 사용
-- Enum: `OptionType`, `ExchangeSuffix`, `ScreenerSortBy`, `KisTrId`
-- Lombok: `@RequiredArgsConstructor`로 생성자 최소화, 필요 시 `@Slf4j` 권장
-- 문서: 상세 API 스키마/예제는 `docs/API.md` 및 Swagger UI 참고
+- **공통 유틸**: `SymbolUtils` — TR ID/키 정규화. `ExchangeSuffix`, `KisTrId` enum 사용
+- **Enum**: `OptionType`, `ExchangeSuffix`, `ScreenerSortBy`, `KisTrId`
+- **Lombok**: `@RequiredArgsConstructor`로 생성자 최소화, 필요 시 `@Slf4j` 권장
+- **문서**: 상세 API 스키마/예제는 `docs/API.md` 및 Swagger UI 참고
+- **KIS WebSocket 컴포넌트**:
+  - `KisWsClient`: KIS WebSocket 연결 및 데이터 수신 관리
+  - `KisWebSocketManager`: 클라이언트별 구독 관리 및 데이터 팬아웃
+  - `KisAuthClient`: KIS API 인증 및 토큰 관리
+  - `KisWebSocketRequest`: KIS WebSocket 요청 DTO (구독/해제)
 
 ### 사용 예시
 ```bash
+# REST API 예시
 curl 'http://localhost:8080/quote?ticker=AAPL'
 curl 'http://localhost:8080/options?ticker=AAPL'
+
+# WebSocket 예시 (여러 클라이언트가 동일한 심볼 구독 가능)
+npx -y wscat -c 'ws://localhost:8080/ws/quotes?tickers=005930,AAPL&intervalSec=1'
+```
+
+### 서버 관리
+#### Graceful Shutdown 스크립트
+```bash
+#!/bin/bash
+APP_NAME="yfin-java-lite"
+GRACEFUL_TIMEOUT=30
+
+# 프로세스 ID 찾기
+PID=$(ps -ef | grep "$APP_NAME" | grep -v grep | awk '{print $2}')
+
+if [ -z "$PID" ]; then
+    echo "Application '$APP_NAME' is not running"
+    exit 0
+fi
+
+echo "Found '$APP_NAME' with PID: $PID"
+
+# Graceful shutdown
+echo "Initiating graceful shutdown..."
+kill -TERM $PID
+
+# 대기 및 상태 확인
+for i in $(seq 1 $GRACEFUL_TIMEOUT); do
+    if ! kill -0 $PID 2>/dev/null; then
+        echo "Application stopped gracefully after ${i} seconds"
+        exit 0
+    fi
+    printf "\rWaiting for graceful shutdown... %d/%d" $i $GRACEFUL_TIMEOUT
+    sleep 1
+done
+
+echo ""
+echo "Graceful shutdown timeout reached, forcing termination..."
+kill -9 $PID 2>/dev/null
+
+# 최종 확인
+sleep 2
+if kill -0 $PID 2>/dev/null; then
+    echo "ERROR: Failed to stop application"
+    exit 1
+else
+    echo "Application stopped successfully"
+    exit 0
+fi
 ```
