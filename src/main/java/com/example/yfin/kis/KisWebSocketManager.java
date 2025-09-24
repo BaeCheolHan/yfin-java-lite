@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * KIS WebSocket 통합 관리자
- * - 1개 세션으로 최대 41개 종목 관리
+ * - 1개 세션으로 최대 41개 종목 관리 (LRU 방식으로 제한 초과 시 자동 관리)
  * - 클라이언트별 구독 요청을 통합하여 KIS에 전송
  * - 종목별 데이터를 구독자에게 팬아웃
  */
@@ -33,7 +33,6 @@ public class KisWebSocketManager {
     // KIS WebSocket 연결 상태
     private final AtomicBoolean isConnected = new AtomicBoolean(false);
     private final AtomicInteger totalSymbols = new AtomicInteger(0);
-    private final int MAX_SYMBOLS_PER_SESSION = 41;
     
     public KisWebSocketManager(KisWsClient kisWsClient) {
         this.kisWsClient = kisWsClient;

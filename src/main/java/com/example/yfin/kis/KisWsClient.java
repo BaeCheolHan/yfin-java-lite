@@ -24,6 +24,7 @@ import java.net.URI;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -63,23 +64,83 @@ public class KisWsClient {
 
     // KIS WebSocket 연결 상태 관리
     private final AtomicBoolean needsReconnection = new AtomicBoolean(false);
-    private final AtomicInteger maxSymbolsPerSession = new AtomicInteger(41); // KIS 제한
+    private final AtomicInteger maxSymbolsPerSession;
+    
+    // LRU 구독 관리
+    private final ConcurrentMap<String, Long> subscriptionTimestamps = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, AtomicInteger> accessCounts = new ConcurrentHashMap<>();
+    private final Object lruLock = new Object(); // LRU 연산 동기화
 
     private final boolean wsEnabled;
 
     public KisWsClient(KisAuthClient auth, 
                        @Value("${api.kis.ws-url:ws://ops.koreainvestment.com:21000}") String wsUrl,
-                       @Value("${api.kis.ws-enabled:true}") boolean wsEnabled) {
+                       @Value("${api.kis.ws-enabled:true}") boolean wsEnabled,
+                       @Value("${api.kis.max-symbols-per-session:41}") int maxSymbolsPerSession) {
         this.auth = auth;
         this.wsUrl = wsUrl;
         this.wsEnabled = wsEnabled;
+        this.maxSymbolsPerSession = new AtomicInteger(maxSymbolsPerSession);
         this.objectMapper = new ObjectMapper().setSerializationInclusion(JsonInclude.Include.NON_NULL);
         
         log.info("KisWsClient initialized with wsUrl: {}", wsUrl);
         log.info("KisWsClient wsEnabled: {}", wsEnabled);
+        log.info("KisWsClient maxSymbolsPerSession: {}", maxSymbolsPerSession);
     }
 
     public boolean isEnabled() { return wsEnabled && auth != null && auth.isConfigured(); }
+    
+    /**
+     * LRU 기반으로 가장 오래된 구독을 찾아 반환
+     */
+    private String findLeastRecentlyUsedSymbol() {
+        synchronized (lruLock) {
+            return subscriptionTimestamps.entrySet().stream()
+                .filter(entry -> subscriptionRefCount.containsKey(entry.getKey()))
+                .min(Map.Entry.comparingByValue())
+                .map(Map.Entry::getKey)
+                .orElse(null);
+        }
+    }
+    
+    /**
+     * 심볼의 접근 시간을 업데이트
+     */
+    private void updateAccessTime(String symbol) {
+        long currentTime = System.currentTimeMillis();
+        subscriptionTimestamps.put(symbol, currentTime);
+        int accessCount = accessCounts.computeIfAbsent(symbol, k -> new AtomicInteger(0)).incrementAndGet();
+        log.debug("Updated access time for symbol: {} (access count: {})", symbol, accessCount);
+    }
+    
+    /**
+     * LRU 방식으로 구독 제한 관리
+     */
+    private boolean manageSubscriptionLimit(String newSymbol) {
+        synchronized (lruLock) {
+            if (subscriptionRefCount.size() < maxSymbolsPerSession.get()) {
+                return true; // 제한 내에 있음
+            }
+            
+            // 가장 오래된 구독 찾기
+            String oldestSymbol = findLeastRecentlyUsedSymbol();
+            if (oldestSymbol == null) {
+                log.warn("No symbols found for LRU removal, but limit exceeded");
+                return false;
+            }
+            
+            log.info("KIS symbol limit exceeded ({}), removing oldest symbol: {} (last access: {})", 
+                subscriptionRefCount.size(), oldestSymbol, 
+                new java.util.Date(subscriptionTimestamps.getOrDefault(oldestSymbol, 0L)));
+            
+            // 오래된 구독 해제
+            unsubscribe(oldestSymbol);
+            
+            // 새 구독 추가
+            updateAccessTime(newSymbol);
+            return true;
+        }
+    }
 
     public Flux<QuoteDto> subscribe(String symbol) {
         if (!isEnabled()) {
@@ -92,14 +153,19 @@ public class KisWsClient {
 
         // 새로운 종목 추가 시에만 KIS 서버에 구독 요청
         if (newCount == 1) {
-            if (subscriptionRefCount.size() > maxSymbolsPerSession.get()) {
-                log.warn("KIS symbol limit exceeded ({}), forcing reconnection", subscriptionRefCount.size());
-                needsReconnection.set(true);
-                disconnect();
-            } else {
-                // 첫 번째 구독자일 때만 KIS 서버에 구독 요청
-                outbound.tryEmitNext(symbol);
+            // LRU 방식으로 구독 제한 관리
+            if (!manageSubscriptionLimit(symbol)) {
+                log.error("Failed to manage subscription limit for symbol: {}", symbol);
+                // ref-count 감소
+                subscriptionRefCount.compute(symbol, (k, v) -> v != null && v > 1 ? v - 1 : null);
+                return Flux.empty();
             }
+            
+            // 첫 번째 구독자일 때만 KIS 서버에 구독 요청
+            outbound.tryEmitNext(symbol);
+        } else {
+            // 기존 구독자의 경우 접근 시간만 업데이트
+            updateAccessTime(symbol);
         }
 
         // 심볼별 팬아웃 싱크
@@ -151,6 +217,12 @@ public class KisWsClient {
             }
             // tr_key 매핑 정리
             transactionKeyToOriginalSymbols.values().forEach(set -> set.remove(symbol));
+            
+            // LRU 관련 데이터 정리
+            synchronized (lruLock) {
+                subscriptionTimestamps.remove(symbol);
+                accessCounts.remove(symbol);
+            }
             
             // 종목이 모두 해제되면 연결도 해제
             if (subscriptionRefCount.isEmpty()) {
@@ -517,6 +589,9 @@ public class KisWsClient {
                                         for (String original : originals) {
                                             Sinks.Many<QuoteDto> sink = symbolSinks.get(original);
                                             if (sink != null) {
+                                                // 데이터 수신 시 접근 시간 업데이트 (LRU 관리)
+                                                updateAccessTime(original);
+                                                
                                                 QuoteDto dto = new QuoteDto();
                                                 dto.setSymbol(original);
                                                 dto.setRegularMarketPrice(price);

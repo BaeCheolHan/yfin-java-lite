@@ -103,6 +103,7 @@ api:
     ws-url: wss://openapi.koreainvestment.com:9443/websocket  # 실전 도메인
     approval-url: /oauth2/Approval
     ws-enabled: true  # KIS WebSocket 활성화/비활성화 플래그
+    max-symbols-per-session: 41  # KIS WebSocket 세션당 최대 구독 종목 수
 ```
 
 #### Redis 저장(요약)
@@ -113,6 +114,7 @@ api:
 - **단일 연결**: 하나의 app_key에 하나의 WebSocket 연결만 허용
 - **멀티 클라이언트 팬아웃**: 여러 클라이언트가 동일한 심볼을 구독할 때 모든 클라이언트가 동일한 데이터를 받음
 - **참조 카운팅**: 각 심볼별로 구독자 수를 추적하여 마지막 구독자가 해제될 때만 KIS 서버에 구독 해제 요청 전송
+- **LRU 구독 관리**: 41개 종목 제한 초과 시 가장 오래된 구독을 자동으로 해제하고 새로운 구독을 추가
 - **Graceful Shutdown**: 애플리케이션 종료 시 모든 구독된 심볼에 대해 순차적으로 구독 해제 요청(`tr_type=2`) 전송
 
 ### 개발 가이드
